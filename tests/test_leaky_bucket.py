@@ -130,6 +130,75 @@ async def test_shapes_where_the_token_bucket_meters(clock: FakeClock):
     assert max(d.delay for d in leaky_decisions) == pytest.approx(4.5)
 
 
+async def test_max_delay_rejects_instead_of_holding_too_long(clock: FakeClock):
+    """A queue timeout: past max_delay, reject rather than shape.
+
+    Shaping is only useful while the caller is still waiting. Configured as
+    2 per 60s the drain is 1/30s, so the second request would be held for 30
+    real seconds and any HTTP client would time out first.
+    """
+    limiter = InMemoryLeakyBucket.from_limit_window(limit=2, window=60.0, max_delay=5.0, clock=clock)
+
+    first = await limiter.check("client-a")
+    assert first.allowed and first.delay == 0.0
+
+    # The next request would wait 30s, well past the 5s ceiling.
+    denied = await limiter.check("client-a")
+    assert not denied.allowed
+    assert denied.retry_after == pytest.approx(25.0), "wait until the delay would fit in 5s"
+
+
+async def test_max_delay_zero_turns_the_shaper_into_a_meter(clock: FakeClock):
+    """A zero timeout means never hold a request -- reject the moment it queues."""
+    limiter = InMemoryLeakyBucket(capacity=5, leak_rate=1.0, max_delay=0.0, clock=clock)
+
+    assert (await limiter.check("client-a")).allowed
+    assert not (await limiter.check("client-a")).allowed
+
+    clock.advance(1.0)
+    assert (await limiter.check("client-a")).allowed
+
+
+async def test_rejecting_on_max_delay_does_not_consume_a_slot(clock: FakeClock):
+    """A timed-out request must not be charged for queue space it never used.
+
+    Deciding this inside the algorithm rather than in the caller is what makes
+    it possible: rejecting after the level had already been incremented would
+    quietly serve below the configured rate.
+    """
+    limiter = InMemoryLeakyBucket(capacity=10, leak_rate=1.0, max_delay=1.0, clock=clock)
+
+    assert (await limiter.check("client-a")).allowed  # delay 0
+    assert (await limiter.check("client-a")).allowed  # delay 1.0, still allowed
+
+    for _ in range(20):
+        assert not (await limiter.check("client-a")).allowed
+
+    # Those 20 rejections must not have pushed the queue out; two seconds of
+    # drain is enough to clear both admitted requests.
+    clock.advance(2.0)
+    admitted = await limiter.check("client-a")
+    assert admitted.allowed and admitted.delay == pytest.approx(0.0)
+
+
+async def test_max_delay_retry_after_actually_clears(clock: FakeClock):
+    limiter = InMemoryLeakyBucket(capacity=10, leak_rate=2.0, max_delay=0.5, clock=clock)
+
+    for _ in range(2):
+        assert (await limiter.check("client-a")).allowed
+
+    denied = await limiter.check("client-a")
+    assert not denied.allowed
+
+    clock.advance(denied.retry_after)
+    assert (await limiter.check("client-a")).allowed
+
+
+async def test_negative_max_delay_is_rejected():
+    with pytest.raises(ValueError):
+        InMemoryLeakyBucket(capacity=5, leak_rate=1.0, max_delay=-1.0)
+
+
 async def test_from_limit_window_maps_onto_capacity_and_rate(clock: FakeClock):
     limiter = InMemoryLeakyBucket.from_limit_window(limit=120, window=60.0, clock=clock)
 

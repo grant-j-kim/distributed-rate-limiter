@@ -35,14 +35,18 @@ class InMemoryLeakyBucket(RateLimiter):
         capacity: int,
         leak_rate: float,
         *,
+        max_delay: float | None = None,
         clock: Clock = default_clock,
     ):
         if capacity < 1:
             raise ValueError("capacity must be >= 1")
         if leak_rate <= 0:
             raise ValueError("leak_rate must be > 0")
+        if max_delay is not None and max_delay < 0:
+            raise ValueError("max_delay must be >= 0")
         self.capacity = capacity
         self.leak_rate = leak_rate
+        self.max_delay = max_delay
         # Satisfy the RateLimiter interface: `window` is the time for a full
         # queue to drain completely.
         self.limit = capacity
@@ -57,12 +61,18 @@ class InMemoryLeakyBucket(RateLimiter):
         limit: int,
         window: float,
         *,
+        max_delay: float | None = None,
         clock: Clock = default_clock,
     ) -> "InMemoryLeakyBucket":
         """Build a bucket equivalent to `limit` requests per `window` seconds."""
         if window <= 0:
             raise ValueError("window must be > 0")
-        return cls(capacity=limit, leak_rate=limit / window, clock=clock)
+        return cls(
+            capacity=limit,
+            leak_rate=limit / window,
+            max_delay=max_delay,
+            clock=clock,
+        )
 
     async def check(self, key: str) -> Decision:
         now = self._clock()
@@ -87,6 +97,27 @@ class InMemoryLeakyBucket(RateLimiter):
         # This request joins the queue behind `level` others; it reaches the
         # front once they have drained.
         delay = level / self.leak_rate
+
+        if self.max_delay is not None and delay > self.max_delay + self._EPSILON:
+            # Queue timeout. A shaped delay is only useful if the caller is
+            # still there to receive the response: "2 per 60s" drains at
+            # 1/30s, so the second request would be held for 30 seconds and
+            # every HTTP client would time out first.
+            #
+            # This has to be decided here rather than by the caller, because
+            # rejecting after check() had already enqueued the request would
+            # charge the client for a slot it never used -- quietly serving
+            # below the configured rate.
+            wait = delay - self.max_delay
+            self._buckets[key] = (level, now)
+            return Decision(
+                allowed=False,
+                limit=self.capacity,
+                remaining=max(0, int(self.capacity - level)),
+                reset_after=wait,
+                retry_after=wait,
+            )
+
         level += 1.0
         self._buckets[key] = (level, now)
 
