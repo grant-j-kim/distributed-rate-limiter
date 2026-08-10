@@ -6,6 +6,7 @@ import pytest
 
 from distributed_rate_limiter.base import Clock, RateLimiter
 from distributed_rate_limiter.memory.fixed_window import InMemoryFixedWindow
+from distributed_rate_limiter.memory.sliding_window_log import InMemorySlidingWindowLog
 
 
 class FakeClock:
@@ -39,6 +40,7 @@ class LimiterFactory(Protocol):
 # behave identically to the in-memory references.
 ALL_LIMITERS: list[tuple[str, LimiterFactory]] = [
     ("fixed_window", InMemoryFixedWindow),
+    ("sliding_window_log", InMemorySlidingWindowLog),
 ]
 
 

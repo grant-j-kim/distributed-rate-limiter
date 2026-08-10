@@ -24,3 +24,8 @@ packages = ["src/distributed_rate_limiter"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# Put src/ on sys.path directly rather than relying on the editable install's
+# .pth file. On macOS that .pth can acquire the UF_HIDDEN flag, and Python
+# 3.13's site.py silently skips hidden .pth files -- which breaks the import
+# with no diagnostic. This keeps the suite runnable either way.
+pythonpath = ["src"]
