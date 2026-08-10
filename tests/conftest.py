@@ -17,6 +17,9 @@ from distributed_rate_limiter.memory.sliding_window_log import InMemorySlidingWi
 from distributed_rate_limiter.memory.token_bucket import InMemoryTokenBucket
 from distributed_rate_limiter.redis_backend.fixed_window import RedisFixedWindow
 from distributed_rate_limiter.redis_backend.leaky_bucket import RedisLeakyBucket
+from distributed_rate_limiter.redis_backend.sliding_window_counter import (
+    RedisSlidingWindowCounter,
+)
 from distributed_rate_limiter.redis_backend.sliding_window_log import (
     RedisSlidingWindowLog,
 )
@@ -67,6 +70,7 @@ ALL_LIMITERS: list[tuple[str, bool, LimiterFactory]] = [
     ("leaky_bucket", False, InMemoryLeakyBucket.from_limit_window),
     ("redis_fixed_window", True, RedisFixedWindow),
     ("redis_sliding_window_log", True, RedisSlidingWindowLog),
+    ("redis_sliding_window_counter", True, RedisSlidingWindowCounter),
     ("redis_token_bucket", True, RedisTokenBucket.from_limit_window),
     ("redis_leaky_bucket", True, RedisLeakyBucket.from_limit_window),
 ]
@@ -78,6 +82,7 @@ ALL_LIMITERS: list[tuple[str, bool, LimiterFactory]] = [
 REDIS_LIMITERS: list[tuple[str, LimiterFactory]] = [
     ("fixed_window", RedisFixedWindow),
     ("sliding_window_log", RedisSlidingWindowLog),
+    ("sliding_window_counter", RedisSlidingWindowCounter),
     ("token_bucket", RedisTokenBucket.from_limit_window),
     ("leaky_bucket", RedisLeakyBucket.from_limit_window),
 ]

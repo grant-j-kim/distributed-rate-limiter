@@ -5,33 +5,33 @@ Building a rate limiter from scratch that controls how many requests a client
 can make in a given time window, and works correctly across multiple distributed
 server instances (not just a single in-memory process).
 
+## Status
+Milestones 1-3 are complete. 260 tests passing.
+
+- [x] **1. Core algorithms** — all five, in-memory, in `memory/`.
+- [x] **2. Middleware layer** — `RateLimitMiddleware` + `@rate_limit`, in
+      `middleware.py`. Runnable demo in `examples/app.py`.
+- [x] **3. Distributed correctness** — all five, Redis-backed, in
+      `redis_backend/`. Atomicity proven under real concurrency.
+- [ ] **4. Load testing** — load generator, allowed/rejected logs, comparison
+      plots at burst boundaries.
+- [ ] **5. Real usage (stretch)** — package as pip-installable middleware.
+
 ## Plan / Milestones
-1. **Core algorithms** — implement each of the following as standalone,
-   independently testable modules:
-   - Fixed window counter
-   - Sliding window log
-   - Sliding window counter
-   - Token bucket
-   - Leaky bucket
-   Unit test each against the same scenarios: steady traffic under limit,
-   burst at window boundary, burst exceeding limit, exactly-at-limit edge cases.
-2. **Middleware layer** — wrap the algorithms as pluggable FastAPI middleware,
-   configurable per-endpoint (e.g. `@rate_limit(algorithm="token_bucket",
-   limit=100, window=60)`). Return proper `429 Too Many Requests` with a
-   `Retry-After` header.
-3. **Distributed correctness** — swap in-memory state for Redis. Handle the
-   core race condition (two concurrent requests both read the same count,
-   both increment, both get allowed) using atomic operations: Redis
-   `INCR`+`EXPIRE` or a Lua script (`EVAL`) for the token bucket refill logic.
-   Test correctness under real concurrency (multiple async clients hammering
-   the same key simultaneously).
-4. **Load testing** — write a load generator (locust or a simple asyncio
-   script) simulating steady load, bursty load, and multiple clients. Log
-   allowed/rejected requests per algorithm. Produce plots comparing all
-   5 algorithms' behavior at burst boundaries.
-5. **Real usage (stretch goal)** — package as a pip-installable middleware so
-   it can be integrated into real, separate applications rather than only
-   tested synthetically.
+1. **Core algorithms** — fixed window counter, sliding window log, sliding
+   window counter, token bucket, leaky bucket. Each standalone and
+   independently testable.
+2. **Middleware layer** — pluggable FastAPI middleware, configurable
+   per-endpoint (`@rate_limit(algorithm="token_bucket", limit=100, window=60)`),
+   returning `429` with `Retry-After`.
+3. **Distributed correctness** — Redis instead of in-memory state, using
+   atomic operations (`INCR`+`EXPIRE`, or Lua for anything with arithmetic),
+   tested under real concurrency.
+4. **Load testing** — load generator (locust or asyncio) simulating steady,
+   bursty, and multi-client load. Log allowed/rejected per algorithm. Plot all
+   5 algorithms' behaviour at burst boundaries.
+5. **Real usage (stretch goal)** — pip-installable so it can be integrated
+   into real, separate applications rather than only tested synthetically.
 
 ## Key decisions
 - Language/stack: Python, FastAPI, Redis.
@@ -39,6 +39,68 @@ server instances (not just a single in-memory process).
   prioritize getting the atomicity right over adding more algorithms.
 - Numbers used anywhere (load test results, overhead, correctness percentages)
   must come from actually running the code, not estimates.
+- **The interface is async** (`async def check(key) -> Decision`), chosen up
+  front so Redis and FastAPI need no rewrite.
+- **Each (algorithm, backend) pair is its own class**, not one algorithm over a
+  swappable store. An atomic token bucket cannot be built on a generic
+  get-then-set store, because the read-modify-write gap *is* the race
+  condition.
+- **The clock is injectable.** In-memory limiters take a wall clock (not
+  monotonic — that is per-process and would desync instances). Redis limiters
+  default to reading Redis's own `TIME`, so instances with skewed clocks agree
+  on window boundaries; tests inject a clock only for determinism.
+- **`Decision.delay`** is how the leaky bucket shapes traffic. Callers must
+  await it before proceeding, or the shaper silently degrades into a meter.
+
+## How the tests are organised
+This is the part worth understanding before adding anything.
+
+- `tests/test_common_scenarios.py` — 10 scenarios every limiter must satisfy,
+  parameterized over **every** implementation in `conftest.ALL_LIMITERS`
+  (10 in-memory + Redis = 100 test instances). A new backend joins that list
+  and must pass unchanged. That is how equivalence is *asserted*, not assumed.
+- `tests/test_redis_concurrency.py` — parameterized over
+  `conftest.REDIS_LIMITERS`. Includes a deliberately naive `GET`/`SET`
+  limiter as a **control**: it must over-admit. If that test ever starts
+  passing, the concurrency suite has stopped exercising real concurrency.
+- `tests/test_<algorithm>.py` — behaviour unique to one algorithm (the fixed
+  window's boundary burst, the counter's measured divergence, and so on).
+- Redis-backed tests use unique key prefixes on DB 15 and skip cleanly when no
+  server is reachable.
+
+## Gotchas already paid for
+- **TTL means something different in every algorithm.** Fixed window: never
+  refresh (the TTL *is* the window; refreshing locks clients out). Sliding log:
+  always refresh (expiry is only GC; the window is enforced by score pruning).
+  Buckets: must outlive a full refill, or a throttled client gets a free reset
+  by waiting. Sliding counter: must span two windows, since this window's count
+  is read as `prev` in the next.
+- **Float drift is real and crosses into Lua.** Incremental refill accumulates
+  binary error, so `check()` tolerates being `1e-9` short. `retry_after` is
+  reported exactly — padding it instead pushes it past its own window.
+- **`ZADD` on an existing member updates its score** rather than inserting, so
+  sliding-log entries carry a uuid member. A colliding variant admitted 20 of
+  20 against a limit of 5.
+- **This project sits in iCloud-synced `~/Desktop`.** iCloud sets `UF_HIDDEN`
+  on `.venv` `.pth` files and Python 3.13 silently skips hidden `.pth` files,
+  so the editable install stops importing with no diagnostic. pytest is immune
+  (`pythonpath` in `pyproject.toml`); everything else needs `PYTHONPATH=src`.
+
+## Running things
+```bash
+# tests (starts nothing; Redis tests skip if no server)
+.venv/bin/python -m pytest -q
+
+# Redis, built from source at ~/.local/bin (no Homebrew: /opt/homebrew
+# belongs to another user account and predates this macOS version)
+~/.local/bin/redis-server --port 6379 --save '' --appendonly no --daemonize yes \
+  --pidfile /tmp/redis-drl.pid --logfile /tmp/redis-drl.log
+~/.local/bin/redis-cli ping
+~/.local/bin/redis-cli shutdown nosave   # stop it
+
+# demo server: one endpoint per algorithm, docs at /docs
+PYTHONPATH=src .venv/bin/python -m uvicorn examples.app:app --reload
+```
 
 ## Working style preferences
 - Before writing any non-trivial logic (especially anything involving
@@ -51,3 +113,6 @@ server instances (not just a single in-memory process).
   changed and propose a commit message, but wait for confirmation before
   running `git commit`.
 - Don't auto-commit without that prompt, even in auto-accept-style workflows.
+- Commit messages: condensed. Subject plus a short body keeping measured
+  numbers and any non-obvious fix; the per-case detail already lives in test
+  docstrings.
