@@ -9,5 +9,8 @@ meaningfully run.
 """
 
 from distributed_rate_limiter.redis_backend.fixed_window import RedisFixedWindow
+from distributed_rate_limiter.redis_backend.sliding_window_log import (
+    RedisSlidingWindowLog,
+)
 
-__all__ = ["RedisFixedWindow"]
+__all__ = ["RedisFixedWindow", "RedisSlidingWindowLog"]

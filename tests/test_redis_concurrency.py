@@ -98,9 +98,13 @@ async def test_naive_implementation_over_admits_under_concurrency(redis_or_skip,
     )
 
 
-async def test_atomic_implementation_holds_the_limit_exactly(redis_or_skip, prefix):
-    """The real thing: 50 simultaneous requests, limit 5, exactly 5 admitted."""
-    limiter = RedisFixedWindow(redis_or_skip, limit=5, window=60.0, prefix=prefix)
+async def test_atomic_implementation_holds_the_limit_exactly(make_redis_limiter):
+    """The real thing: 50 simultaneous requests, limit 5, exactly 5 admitted.
+
+    Runs against every Redis-backed limiter registered in conftest, so a new
+    backend cannot be added without proving this.
+    """
+    limiter = make_redis_limiter(limit=5, window=60.0)
 
     allowed = await count_allowed_concurrently(limiter, requests=50)
 
@@ -108,11 +112,9 @@ async def test_atomic_implementation_holds_the_limit_exactly(redis_or_skip, pref
 
 
 @pytest.mark.parametrize("concurrency", [10, 100, 500])
-async def test_limit_holds_at_several_concurrency_levels(redis_or_skip, prefix, concurrency):
+async def test_limit_holds_at_several_concurrency_levels(make_redis_limiter, concurrency):
     """Load level must not change the answer."""
-    limiter = RedisFixedWindow(
-        redis_or_skip, limit=20, window=60.0, prefix=f"{prefix}:{concurrency}"
-    )
+    limiter = make_redis_limiter(limit=20, window=60.0, suffix=f":{concurrency}")
 
     allowed = await count_allowed_concurrently(limiter, requests=concurrency)
 
@@ -120,7 +122,7 @@ async def test_limit_holds_at_several_concurrency_levels(redis_or_skip, prefix, 
     assert allowed == expected, f"{concurrency} concurrent requests admitted {allowed}"
 
 
-async def test_separate_instances_share_one_limit(redis_or_skip, prefix):
+async def test_separate_instances_share_one_limit(make_redis_limiter, redis_or_skip):
     """The reason Redis is here at all.
 
     Four limiter objects standing in for four application instances, all
@@ -128,8 +130,11 @@ async def test_separate_instances_share_one_limit(redis_or_skip, prefix):
     them, not four -- which is precisely what the in-memory versions cannot
     do, since each process holds its own dict.
     """
+    shared = make_redis_limiter(limit=10, window=60.0)
+    # Same prefix, separate objects: four instances of one deployment.
     instances = [
-        RedisFixedWindow(redis_or_skip, limit=10, window=60.0, prefix=prefix) for _ in range(4)
+        type(shared)(redis_or_skip, limit=10, window=60.0, prefix=shared.prefix)
+        for _ in range(4)
     ]
 
     results = await asyncio.gather(
@@ -140,9 +145,9 @@ async def test_separate_instances_share_one_limit(redis_or_skip, prefix):
     assert allowed == 10, f"four instances admitted {allowed}, expected one shared limit of 10"
 
 
-async def test_concurrent_traffic_on_distinct_keys_is_unaffected(redis_or_skip, prefix):
+async def test_concurrent_traffic_on_distinct_keys_is_unaffected(make_redis_limiter):
     """Contention on one key must not bleed into another."""
-    limiter = RedisFixedWindow(redis_or_skip, limit=5, window=60.0, prefix=prefix)
+    limiter = make_redis_limiter(limit=5, window=60.0)
 
     async def run(key: str) -> int:
         return await count_allowed_concurrently(limiter, requests=20, key=key)

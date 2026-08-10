@@ -16,6 +16,9 @@ from distributed_rate_limiter.memory.sliding_window_counter import (
 from distributed_rate_limiter.memory.sliding_window_log import InMemorySlidingWindowLog
 from distributed_rate_limiter.memory.token_bucket import InMemoryTokenBucket
 from distributed_rate_limiter.redis_backend.fixed_window import RedisFixedWindow
+from distributed_rate_limiter.redis_backend.sliding_window_log import (
+    RedisSlidingWindowLog,
+)
 
 REDIS_URL = os.environ.get("DRL_TEST_REDIS_URL", "redis://localhost:6379/15")
 
@@ -61,6 +64,16 @@ ALL_LIMITERS: list[tuple[str, bool, LimiterFactory]] = [
     ("token_bucket", False, InMemoryTokenBucket.from_limit_window),
     ("leaky_bucket", False, InMemoryLeakyBucket.from_limit_window),
     ("redis_fixed_window", True, RedisFixedWindow),
+    ("redis_sliding_window_log", True, RedisSlidingWindowLog),
+]
+
+# Redis-backed limiters also inherit the concurrency suite in
+# test_redis_concurrency.py. Every entry here must hold its limit exactly
+# when hammered by simultaneous clients -- the property that distinguishes a
+# correct distributed limiter from one that merely looks correct serially.
+REDIS_LIMITERS: list[tuple[str, LimiterFactory]] = [
+    ("fixed_window", RedisFixedWindow),
+    ("sliding_window_log", RedisSlidingWindowLog),
 ]
 
 
@@ -121,3 +134,25 @@ def make_limiter(request, clock: FakeClock, redis_client) -> Callable[..., RateL
     return functools.partial(
         factory, client=redis_client, clock=clock, prefix=prefix, limit=5, window=60.0
     )
+
+
+@pytest.fixture(
+    params=[f for _, f in REDIS_LIMITERS],
+    ids=[name for name, _ in REDIS_LIMITERS],
+)
+def make_redis_limiter(request, redis_client) -> Callable[..., RateLimiter]:
+    """Builds one Redis-backed limiter, for the concurrency suite.
+
+    No clock is injected: these tests exercise the production path, where the
+    script reads the time from Redis itself.
+    """
+    if redis_client is None:
+        pytest.skip(f"no Redis server at {REDIS_URL}")
+
+    factory: LimiterFactory = request.param
+
+    def _make(limit: int = 5, window: float = 60.0, suffix: str = "") -> RateLimiter:
+        prefix = f"drltest:{uuid.uuid4().hex}{suffix}"
+        return factory(client=redis_client, limit=limit, window=window, prefix=prefix)
+
+    return _make
