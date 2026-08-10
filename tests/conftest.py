@@ -6,6 +6,7 @@ import pytest
 
 from distributed_rate_limiter.base import Clock, RateLimiter
 from distributed_rate_limiter.memory.fixed_window import InMemoryFixedWindow
+from distributed_rate_limiter.memory.leaky_bucket import InMemoryLeakyBucket
 from distributed_rate_limiter.memory.sliding_window_counter import (
     InMemorySlidingWindowCounter,
 )
@@ -50,6 +51,7 @@ ALL_LIMITERS: list[tuple[str, LimiterFactory]] = [
     # classmethod adapts it to the (limit, window) the fixture speaks rather
     # than forcing the algorithm to give up its two independent knobs.
     ("token_bucket", InMemoryTokenBucket.from_limit_window),
+    ("leaky_bucket", InMemoryLeakyBucket.from_limit_window),
 ]
 
 

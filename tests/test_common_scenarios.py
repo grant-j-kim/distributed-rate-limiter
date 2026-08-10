@@ -104,6 +104,21 @@ async def test_remaining_never_goes_negative(make_limiter):
     assert all(d.remaining >= 0 for d in decisions)
 
 
+async def test_delay_is_zero_or_positive_and_only_set_when_allowed(make_limiter):
+    """Shaping is opt-in per algorithm, but the field must always be sane.
+
+    Meters leave delay at 0.0; the shaper sets it on admitted requests. A
+    rejected request is never delayed -- it is simply not happening.
+    """
+    limiter = make_limiter(limit=3, window=60.0)
+
+    for _ in range(10):
+        decision = await limiter.check("client-a")
+        assert decision.delay >= 0.0
+        if not decision.allowed:
+            assert decision.delay == 0.0
+
+
 async def test_reset_clears_state(make_limiter):
     limiter = make_limiter(limit=2, window=60.0)
 

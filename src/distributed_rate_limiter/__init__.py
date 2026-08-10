@@ -2,6 +2,7 @@
 
 from distributed_rate_limiter.base import Clock, Decision, RateLimiter
 from distributed_rate_limiter.memory.fixed_window import InMemoryFixedWindow
+from distributed_rate_limiter.memory.leaky_bucket import InMemoryLeakyBucket
 from distributed_rate_limiter.memory.sliding_window_counter import (
     InMemorySlidingWindowCounter,
 )
@@ -13,6 +14,7 @@ __all__ = [
     "Decision",
     "RateLimiter",
     "InMemoryFixedWindow",
+    "InMemoryLeakyBucket",
     "InMemorySlidingWindowCounter",
     "InMemorySlidingWindowLog",
     "InMemoryTokenBucket",

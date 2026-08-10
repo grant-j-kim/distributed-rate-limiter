@@ -46,6 +46,18 @@ class Decision:
     This is what the 429 response's Retry-After header carries.
     """
 
+    delay: float = 0.0
+    """Seconds to wait *before proceeding* on an allowed request.
+
+    Non-zero only for shaping limiters (the leaky bucket), where a request is
+    admitted but queued behind others draining at a fixed rate. The metering
+    algorithms always leave this at 0.0: they answer yes or no immediately.
+
+    A caller that ignores this field turns a shaper back into a meter -- the
+    request is let through, just not at the shaped rate. Middleware must await
+    it before invoking the handler.
+    """
+
 
 class RateLimiter(abc.ABC):
     """One rate limiting algorithm bound to one storage backend.
