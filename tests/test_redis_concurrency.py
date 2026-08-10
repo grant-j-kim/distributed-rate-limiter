@@ -133,8 +133,7 @@ async def test_separate_instances_share_one_limit(make_redis_limiter, redis_or_s
     shared = make_redis_limiter(limit=10, window=60.0)
     # Same prefix, separate objects: four instances of one deployment.
     instances = [
-        type(shared)(redis_or_skip, limit=10, window=60.0, prefix=shared.prefix)
-        for _ in range(4)
+        make_redis_limiter(limit=10, window=60.0, prefix=shared.prefix) for _ in range(4)
     ]
 
     results = await asyncio.gather(
