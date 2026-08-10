@@ -6,6 +6,7 @@ from distributed_rate_limiter.memory.sliding_window_counter import (
     InMemorySlidingWindowCounter,
 )
 from distributed_rate_limiter.memory.sliding_window_log import InMemorySlidingWindowLog
+from distributed_rate_limiter.memory.token_bucket import InMemoryTokenBucket
 
 __all__ = [
     "Clock",
@@ -14,4 +15,5 @@ __all__ = [
     "InMemoryFixedWindow",
     "InMemorySlidingWindowCounter",
     "InMemorySlidingWindowLog",
+    "InMemoryTokenBucket",
 ]

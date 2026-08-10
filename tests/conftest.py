@@ -10,6 +10,7 @@ from distributed_rate_limiter.memory.sliding_window_counter import (
     InMemorySlidingWindowCounter,
 )
 from distributed_rate_limiter.memory.sliding_window_log import InMemorySlidingWindowLog
+from distributed_rate_limiter.memory.token_bucket import InMemoryTokenBucket
 
 
 class FakeClock:
@@ -45,6 +46,10 @@ ALL_LIMITERS: list[tuple[str, LimiterFactory]] = [
     ("fixed_window", InMemoryFixedWindow),
     ("sliding_window_log", InMemorySlidingWindowLog),
     ("sliding_window_counter", InMemorySlidingWindowCounter),
+    # The token bucket's real signature is (capacity, refill_rate); the
+    # classmethod adapts it to the (limit, window) the fixture speaks rather
+    # than forcing the algorithm to give up its two independent knobs.
+    ("token_bucket", InMemoryTokenBucket.from_limit_window),
 ]
 
 
