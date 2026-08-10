@@ -1,0 +1,18 @@
+{
+  "scenario": "steady_over_limit",
+  "question": "With identical smooth over-limit demand, how is the same allowance distributed in time?",
+  "limit": 20,
+  "window": 2.0,
+  "duration": 10.0,
+  "clients": [
+    "client-a"
+  ],
+  "offered_per_algorithm": 200,
+  "algorithms": [
+    "fixed_window",
+    "sliding_window_log",
+    "sliding_window_counter",
+    "token_bucket",
+    "leaky_bucket"
+  ]
+}

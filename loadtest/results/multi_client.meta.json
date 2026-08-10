@@ -1,0 +1,20 @@
+{
+  "scenario": "multi_client",
+  "question": "Does one client exceeding its quota cost a well behaved client anything?",
+  "limit": 20,
+  "window": 2.0,
+  "duration": 10.0,
+  "clients": [
+    "polite",
+    "greedy",
+    "spiky"
+  ],
+  "offered_per_algorithm": 413,
+  "algorithms": [
+    "fixed_window",
+    "sliding_window_log",
+    "sliding_window_counter",
+    "token_bucket",
+    "leaky_bucket"
+  ]
+}

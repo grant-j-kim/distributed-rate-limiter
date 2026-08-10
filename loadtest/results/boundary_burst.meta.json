@@ -1,0 +1,18 @@
+{
+  "scenario": "boundary_burst",
+  "question": "What happens to a burst that straddles a window boundary, and how much does each algorithm over-admit?",
+  "limit": 20,
+  "window": 2.0,
+  "duration": 9.0,
+  "clients": [
+    "client-a"
+  ],
+  "offered_per_algorithm": 90,
+  "algorithms": [
+    "fixed_window",
+    "sliding_window_log",
+    "sliding_window_counter",
+    "token_bucket",
+    "leaky_bucket"
+  ]
+}

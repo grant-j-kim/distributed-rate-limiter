@@ -6,15 +6,17 @@ can make in a given time window, and works correctly across multiple distributed
 server instances (not just a single in-memory process).
 
 ## Status
-Milestones 1-3 are complete. 260 tests passing.
+Milestones 1-4 are complete. 280 tests passing.
 
 - [x] **1. Core algorithms** — all five, in-memory, in `memory/`.
 - [x] **2. Middleware layer** — `RateLimitMiddleware` + `@rate_limit`, in
       `middleware.py`. Runnable demo in `examples/app.py`.
 - [x] **3. Distributed correctness** — all five, Redis-backed, in
       `redis_backend/`. Atomicity proven under real concurrency.
-- [ ] **4. Load testing** — load generator, allowed/rejected logs, comparison
-      plots at burst boundaries.
+- [x] **4. Load testing** — asyncio load generator in `loadtest/`, three
+      scenarios, JSONL logs and plots. Findings in `loadtest/README.md`:
+      the fixed window admits **2.00x** its limit across a boundary, the
+      sliding log exactly **1.00x**, the counter **1.10x**.
 - [ ] **5. Real usage (stretch)** — package as pip-installable middleware.
 
 ## Plan / Milestones
@@ -65,8 +67,12 @@ This is the part worth understanding before adding anything.
   passing, the concurrency suite has stopped exercising real concurrency.
 - `tests/test_<algorithm>.py` — behaviour unique to one algorithm (the fixed
   window's boundary burst, the counter's measured divergence, and so on).
+- `tests/test_loadtest.py` — the measurement rig itself. A bug in `loadtest/`
+  is indistinguishable from a finding, so the sliding-interval peak metric
+  and the runner's handling of shaping delay are pinned down here.
 - Redis-backed tests use unique key prefixes on DB 15 and skip cleanly when no
-  server is reachable.
+  server is reachable. The load generator uses DB 14, so a run can never
+  collide with the suite.
 
 ## Gotchas already paid for
 - **TTL means something different in every algorithm.** Fixed window: never
@@ -85,6 +91,15 @@ This is the part worth understanding before adding anything.
   on `.venv` `.pth` files and Python 3.13 silently skips hidden `.pth` files,
   so the editable install stops importing with no diagnostic. pytest is immune
   (`pythonpath` in `pyproject.toml`); everything else needs `PYTHONPATH=src`.
+- **Over-admission has to be measured over a *sliding* interval.** Bucketing
+  admissions by the limiter's own window index reports 20 and 20 for a burst
+  that straddles a boundary — both within limit, nothing visible — when the
+  client actually got 40 inside one window's worth of time. Peaks are also
+  computed per key and then maximised, never pooled: pooling adds up
+  independent quotas and reports three well-behaved clients as a 3x breach.
+- **Peak admission alone ranks the token bucket with the fixed window.** Both
+  measured ~2x (1.95x and 2.00x), and they mean opposite things — one is a
+  configured burst allowance, the other is a forgotten window.
 
 ## Running things
 ```bash
@@ -100,6 +115,12 @@ This is the part worth understanding before adding anything.
 
 # demo server: one endpoint per algorithm, docs at /docs
 PYTHONPATH=src .venv/bin/python -m uvicorn examples.app:app --reload
+
+# load test: needs Redis running (uses DB 14), ~90s for all three scenarios
+PYTHONPATH=src .venv/bin/python -m loadtest
+PYTHONPATH=src .venv/bin/python -m loadtest --scenario boundary_burst
+PYTHONPATH=src .venv/bin/python -m loadtest --plot-only  # rebuild from logs,
+                                                         # no Redis, no traffic
 ```
 
 ## Working style preferences

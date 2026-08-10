@@ -19,6 +19,13 @@ htmlcov/
 results/
 plots/
 
+# ...except the recorded load test results. These are the milestone 4
+# deliverable, and the raw JSONL is what lets every number in
+# loadtest/README.md be recomputed (python -m loadtest --plot-only) without a
+# Redis server or a re-run.
+!loadtest/results/
+!loadtest/results/**
+
 # OS / editor
 .DS_Store
 .idea/

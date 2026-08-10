@@ -17,6 +17,7 @@ dev = [
     "pytest-asyncio>=0.23",
     "httpx>=0.27",
 ]
+loadtest = ["matplotlib>=3.8"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/distributed_rate_limiter"]
@@ -28,4 +29,4 @@ asyncio_mode = "auto"
 # .pth file. On macOS that .pth can acquire the UF_HIDDEN flag, and Python
 # 3.13's site.py silently skips hidden .pth files -- which breaks the import
 # with no diagnostic. This keeps the suite runnable either way.
-pythonpath = ["src"]
+pythonpath = ["src", "."]
