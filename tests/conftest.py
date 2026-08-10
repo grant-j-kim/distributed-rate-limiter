@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import functools
+import os
+import uuid
 from typing import Callable, Protocol
 
 import pytest
@@ -12,6 +15,9 @@ from distributed_rate_limiter.memory.sliding_window_counter import (
 )
 from distributed_rate_limiter.memory.sliding_window_log import InMemorySlidingWindowLog
 from distributed_rate_limiter.memory.token_bucket import InMemoryTokenBucket
+from distributed_rate_limiter.redis_backend.fixed_window import RedisFixedWindow
+
+REDIS_URL = os.environ.get("DRL_TEST_REDIS_URL", "redis://localhost:6379/15")
 
 
 class FakeClock:
@@ -40,18 +46,21 @@ class LimiterFactory(Protocol):
 
 
 # Every (algorithm, backend) pair registers here and inherits the shared
-# scenario suite in test_common_scenarios.py. Redis-backed implementations
-# will be appended to this list in Milestone 3, which is how we prove they
-# behave identically to the in-memory references.
-ALL_LIMITERS: list[tuple[str, LimiterFactory]] = [
-    ("fixed_window", InMemoryFixedWindow),
-    ("sliding_window_log", InMemorySlidingWindowLog),
-    ("sliding_window_counter", InMemorySlidingWindowCounter),
+# scenario suite in test_common_scenarios.py. A Redis implementation joining
+# this list and passing unchanged is what proves it behaves identically to
+# its in-memory reference -- the equivalence is asserted, not assumed.
+#
+# Entries are (id, needs_redis, factory).
+ALL_LIMITERS: list[tuple[str, bool, LimiterFactory]] = [
+    ("fixed_window", False, InMemoryFixedWindow),
+    ("sliding_window_log", False, InMemorySlidingWindowLog),
+    ("sliding_window_counter", False, InMemorySlidingWindowCounter),
     # The token bucket's real signature is (capacity, refill_rate); the
     # classmethod adapts it to the (limit, window) the fixture speaks rather
     # than forcing the algorithm to give up its two independent knobs.
-    ("token_bucket", InMemoryTokenBucket.from_limit_window),
-    ("leaky_bucket", InMemoryLeakyBucket.from_limit_window),
+    ("token_bucket", False, InMemoryTokenBucket.from_limit_window),
+    ("leaky_bucket", False, InMemoryLeakyBucket.from_limit_window),
+    ("redis_fixed_window", True, RedisFixedWindow),
 ]
 
 
@@ -60,12 +69,55 @@ def clock() -> FakeClock:
     return FakeClock()
 
 
-@pytest.fixture(params=[f for _, f in ALL_LIMITERS], ids=[n for n, _ in ALL_LIMITERS])
-def make_limiter(request, clock: FakeClock) -> Callable[..., RateLimiter]:
+@pytest.fixture
+async def redis_client():
+    """An async Redis client, or None when no server is reachable.
+
+    Returning None rather than erroring lets the suite stay runnable without
+    Redis; the Redis-backed parameters skip instead of failing.
+    """
+    try:
+        import redis.asyncio as aioredis
+    except ImportError:  # pragma: no cover - redis extra not installed
+        yield None
+        return
+
+    # A blocking pool, so that firing hundreds of concurrent checks queues for
+    # a connection instead of raising MaxConnectionsError. Real deployments
+    # bound their pool the same way; the limiter has to be correct whether
+    # requests reach Redis all at once or queue behind a connection.
+    pool = aioredis.BlockingConnectionPool.from_url(
+        REDIS_URL, decode_responses=True, max_connections=64, timeout=20
+    )
+    client = aioredis.Redis(connection_pool=pool)
+    try:
+        await client.ping()
+    except Exception:  # pragma: no cover - no server running
+        await client.aclose()
+        yield None
+        return
+
+    yield client
+    await client.aclose()
+
+
+@pytest.fixture(
+    params=[(needs_redis, f) for _, needs_redis, f in ALL_LIMITERS],
+    ids=[name for name, _, _ in ALL_LIMITERS],
+)
+def make_limiter(request, clock: FakeClock, redis_client) -> Callable[..., RateLimiter]:
     """Builds one limiter of whichever implementation is under test."""
-    factory: LimiterFactory = request.param
+    needs_redis, factory = request.param
 
-    def _make(limit: int = 5, window: float = 60.0) -> RateLimiter:
-        return factory(limit=limit, window=window, clock=clock)
+    if not needs_redis:
+        return lambda limit=5, window=60.0: factory(limit=limit, window=window, clock=clock)
 
-    return _make
+    if redis_client is None:
+        pytest.skip(f"no Redis server at {REDIS_URL}")
+
+    # A unique prefix per test keeps keys isolated without flushing the
+    # database, so a stray FLUSHDB can never wipe something real.
+    prefix = f"drltest:{uuid.uuid4().hex}"
+    return functools.partial(
+        factory, client=redis_client, clock=clock, prefix=prefix, limit=5, window=60.0
+    )
