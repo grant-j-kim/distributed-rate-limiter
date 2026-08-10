@@ -65,15 +65,22 @@ async def test_allowed_request_has_no_retry_after(make_limiter):
     assert decision.retry_after is None
 
 
-async def test_capacity_returns_after_a_full_window(make_limiter, clock: FakeClock):
-    """Waiting out a whole window restores the full quota for any algorithm."""
+async def test_capacity_returns_after_the_window_drains(make_limiter, clock: FakeClock):
+    """Sitting idle long enough restores the full quota for any algorithm.
+
+    Two windows, not one. The sliding window counter still carries a weighted
+    share of the previous window's count one window later -- that is the
+    approximation working as designed, not a defect. Asserting one window here
+    would only be testing a fixed-window assumption. Each algorithm's own file
+    pins down its exact recovery curve.
+    """
     limiter = make_limiter(limit=5, window=60.0)
 
     for _ in range(5):
         assert (await limiter.check("client-a")).allowed
     assert not (await limiter.check("client-a")).allowed
 
-    clock.advance(60.0)
+    clock.advance(120.0)
 
     for i in range(5):
         assert (await limiter.check("client-a")).allowed, f"request {i + 1} after reset"

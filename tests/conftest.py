@@ -6,6 +6,9 @@ import pytest
 
 from distributed_rate_limiter.base import Clock, RateLimiter
 from distributed_rate_limiter.memory.fixed_window import InMemoryFixedWindow
+from distributed_rate_limiter.memory.sliding_window_counter import (
+    InMemorySlidingWindowCounter,
+)
 from distributed_rate_limiter.memory.sliding_window_log import InMemorySlidingWindowLog
 
 
@@ -41,6 +44,7 @@ class LimiterFactory(Protocol):
 ALL_LIMITERS: list[tuple[str, LimiterFactory]] = [
     ("fixed_window", InMemoryFixedWindow),
     ("sliding_window_log", InMemorySlidingWindowLog),
+    ("sliding_window_counter", InMemorySlidingWindowCounter),
 ]
 
 
