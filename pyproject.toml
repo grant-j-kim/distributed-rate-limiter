@@ -1,12 +1,49 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
-name = "distributed-rate-limiter"
-version = "0.1.0"
-description = "Rate limiting algorithms that stay correct across multiple server instances."
+# Distribution name only. The import stays `distributed_rate_limiter`:
+# `distributed-rate-limiter` is already taken on PyPI by an unrelated project,
+# and renaming the import to match would break every existing usage for
+# nothing.
+name = "drl-ratelimit"
+dynamic = ["version"]
+description = "Five rate limiting algorithms that stay correct across multiple server instances."
+readme = "README.md"
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "grant-j-kim", email = "ggkim137@gmail.com" }]
+keywords = [
+    "rate-limiting",
+    "rate-limiter",
+    "redis",
+    "fastapi",
+    "asgi",
+    "token-bucket",
+    "leaky-bucket",
+    "sliding-window",
+    "distributed",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Framework :: FastAPI",
+    "Framework :: AsyncIO",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+# The algorithms -- including the Redis-backed ones -- import nothing outside
+# the standard library. A Redis limiter takes its client as a duck-typed
+# argument, so redis-py is a dependency of the *application* that supplies
+# one, not of this package.
 dependencies = []
 
 [project.optional-dependencies]
@@ -16,11 +53,35 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "httpx>=0.27",
+    # packaging/verify_install.sh builds the wheel before installing it, so
+    # this is needed for the packaging check to run on a fresh clone.
+    "build>=1.0",
 ]
 loadtest = ["matplotlib>=3.8"]
 
+# No [project.urls] yet: this repository has no remote, and pointing the
+# metadata at a URL that does not exist is worse than omitting it. Add
+# Homepage/Source here once there is somewhere real to point.
+
+[tool.hatch.version]
+path = "src/distributed_rate_limiter/__init__.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/distributed_rate_limiter"]
+
+[tool.hatch.build.targets.sdist]
+# The load test rig and its recorded results are part of the project's
+# evidence, not part of the library, so they ship in the sdist and stay out
+# of the wheel.
+include = [
+    "src/distributed_rate_limiter",
+    "tests",
+    "loadtest",
+    "examples",
+    "README.md",
+    "LICENSE",
+    "pyproject.toml",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

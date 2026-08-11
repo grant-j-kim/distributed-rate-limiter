@@ -20,9 +20,15 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp
 
-from distributed_rate_limiter.base import Clock, Decision, RateLimiter, default_clock
+from distributed_rate_limiter.base import Clock, Decision, RateLimiter
 from distributed_rate_limiter.keys import KeyFunc, client_ip_key
-from distributed_rate_limiter.registry import create_limiter
+
+# The sentinel travels with the clock rather than being resolved here: what a
+# missing clock *means* depends on the backend (local wall clock for memory,
+# the server's own TIME for Redis), and only create_limiter knows which
+# backend was asked for. Defaulting to default_clock at this layer would hand
+# every Redis limiter the local process clock and desync the instances.
+from distributed_rate_limiter.registry import _UNSET, create_limiter
 
 DEFAULT_EXEMPT_PATHS = ("/docs", "/redoc", "/openapi.json", "/health")
 
@@ -66,9 +72,17 @@ def too_many_requests(decision: Decision) -> JSONResponse:
 class RateLimitMiddleware:
     """App-wide rate limiting for every request that is not exempt.
 
+        app.add_middleware(RateLimitMiddleware, limit=100, window=60)
+
+        app.add_middleware(                       # shared across instances
+            RateLimitMiddleware,
+            algorithm="token_bucket", backend="redis", client=redis_client,
+            limit=100, window=60,
+        )
+
     Written as raw ASGI rather than BaseHTTPMiddleware: BaseHTTPMiddleware
     wraps each request in an anyio task group and buffers the response, which
-    adds overhead this project is going to measure in Milestone 4.
+    adds per-request overhead for nothing this limiter needs.
     """
 
     def __init__(
@@ -76,17 +90,18 @@ class RateLimitMiddleware:
         app: ASGIApp,
         *,
         algorithm: str = "token_bucket",
+        backend: str = "memory",
         limit: int = 100,
         window: float = 60.0,
         key_func: KeyFunc = client_ip_key,
         exempt_paths: Iterable[str] = DEFAULT_EXEMPT_PATHS,
-        clock: Clock = default_clock,
+        clock: Clock | None | Any = _UNSET,
         limiter: RateLimiter | None = None,
         **limiter_options: object,
     ):
         self.app = app
         self.limiter = limiter or create_limiter(
-            algorithm, limit, window, clock=clock, **limiter_options
+            algorithm, limit, window, backend=backend, clock=clock, **limiter_options
         )
         self.key_func = key_func
         self.exempt_paths = tuple(exempt_paths)
@@ -141,8 +156,9 @@ def rate_limit(
     limit: int = 100,
     window: float = 60.0,
     *,
+    backend: str = "memory",
     key_func: KeyFunc = client_ip_key,
-    clock: Clock = default_clock,
+    clock: Clock | None | Any = _UNSET,
     limiter: RateLimiter | None = None,
     **limiter_options: object,
 ) -> Callable[[Callable[..., Awaitable[Any]]], Callable[..., Awaitable[Any]]]:
@@ -151,6 +167,12 @@ def rate_limit(
         @app.get("/search")
         @rate_limit(algorithm="token_bucket", limit=100, window=60)
         async def search():
+            ...
+
+        @app.get("/expensive")
+        @rate_limit("sliding_window_log", 10, 60,
+                    backend="redis", client=redis_client)
+        async def expensive():
             ...
 
     The limiter is built once at decoration time, so all requests to the
@@ -163,7 +185,7 @@ def rate_limit(
     signature untouched from the caller's point of view.
     """
     endpoint_limiter = limiter or create_limiter(
-        algorithm, limit, window, clock=clock, **limiter_options
+        algorithm, limit, window, backend=backend, clock=clock, **limiter_options
     )
 
     def decorator(func: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:

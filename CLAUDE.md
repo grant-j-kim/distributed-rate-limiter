@@ -6,7 +6,7 @@ can make in a given time window, and works correctly across multiple distributed
 server instances (not just a single in-memory process).
 
 ## Status
-Milestones 1-4 are complete. 280 tests passing.
+All five milestones are complete. 305 tests passing.
 
 - [x] **1. Core algorithms** — all five, in-memory, in `memory/`.
 - [x] **2. Middleware layer** — `RateLimitMiddleware` + `@rate_limit`, in
@@ -17,7 +17,14 @@ Milestones 1-4 are complete. 280 tests passing.
       scenarios, JSONL logs and plots. Findings in `loadtest/README.md`:
       the fixed window admits **2.00x** its limit across a boundary, the
       sliding log exactly **1.00x**, the counter **1.10x**.
-- [ ] **5. Real usage (stretch)** — package as pip-installable middleware.
+- [x] **5. Real usage (stretch)** — packaged as `drl-ratelimit` (the import
+      stays `distributed_rate_limiter`; `distributed-rate-limiter` is taken on
+      PyPI by an unrelated project). `backend="redis"` is now first-class in
+      `create_limiter`, the middleware and the decorator.
+      `packaging/verify_install.sh` builds the wheel, installs it into a
+      throwaway venv outside the repo and runs a real FastAPI app against it:
+      **50 of 120 concurrent admitted against a limit of 50, identical with
+      one server process and with two.** Not published to PyPI.
 
 ## Plan / Milestones
 1. **Core algorithms** — fixed window counter, sliding window log, sliding
@@ -100,6 +107,22 @@ This is the part worth understanding before adding anything.
 - **Peak admission alone ranks the token bucket with the fixed window.** Both
   measured ~2x (1.95x and 2.00x), and they mean opposite things — one is a
   configured burst allowance, the other is a forgotten window.
+- **`create_limiter` must not default `clock` to `default_clock`.** In-memory
+  limiters want the local wall clock; Redis limiters want *no clock argument*,
+  which is what makes them read Redis's own `TIME`. Forwarding a default here
+  would silently give every Redis limiter the local process clock — nothing
+  raises, no test fails, and instances with skewed clocks stop agreeing on
+  window boundaries. Hence the `_UNSET` sentinel: `None` can't do the job
+  because for Redis it is a meaningful value. `middleware.py` passes the
+  sentinel straight through for the same reason.
+- **The middleware meters every non-exempt path**, including whatever a test
+  script hits first. `packaging/drive_consumer.py` runs in phases with a flush
+  between them because 15 requests to a decorated endpoint also spend 15 of
+  the app-wide quota — the first version of that script "failed" at 34 of 50
+  for exactly that reason.
+- **An editable install hides packaging bugs**, since the source tree is on
+  `sys.path` either way. Missing subpackages, a missing `py.typed` and a wrong
+  `packages` setting only show up from a venv that cannot see the repo.
 
 ## Running things
 ```bash
@@ -121,6 +144,11 @@ PYTHONPATH=src .venv/bin/python -m loadtest
 PYTHONPATH=src .venv/bin/python -m loadtest --scenario boundary_burst
 PYTHONPATH=src .venv/bin/python -m loadtest --plot-only  # rebuild from logs,
                                                          # no Redis, no traffic
+
+# packaging: build the wheel, install it into a throwaway venv outside the
+# repo, run a real FastAPI app against it on two processes. Needs Redis (DB 13)
+.venv/bin/python -m build
+./packaging/verify_install.sh
 ```
 
 ## Working style preferences
