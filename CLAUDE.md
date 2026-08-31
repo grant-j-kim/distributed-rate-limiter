@@ -6,7 +6,9 @@ can make in a given time window, and works correctly across multiple distributed
 server instances (not just a single in-memory process).
 
 ## Status
-All five milestones are complete. 305 tests passing.
+The five library milestones are complete. 305 tests passing.
+Milestone 6 (hosted demo) is in progress: both deployment blockers
+are resolved, no demo code written yet.
 
 - [x] **1. Core algorithms** — all five, in-memory, in `memory/`.
 - [x] **2. Middleware layer** — `RateLimitMiddleware` + `@rate_limit`, in
@@ -25,6 +27,14 @@ All five milestones are complete. 305 tests passing.
       throwaway venv outside the repo and runs a real FastAPI app against it:
       **50 of 120 concurrent admitted against a limit of 50, identical with
       one server process and with two.** Not published to PyPI.
+- [ ] **6. Hosted demo (in progress)** — an interactive demo on Vercel in
+      `web/`: a five-algorithm comparison playground replaying an arrival
+      schedule against the *in-memory* limiters on a driven clock (instant,
+      zero Redis), plus a rationed live punchline against Upstash. Both
+      spikes are green: `redis.call('TIME')` works inside Lua on Upstash, and
+      the race reproduces there exactly as locally — **the naive GET/SET
+      control admitted 50 of 50 against a limit of 5; the Lua limiter
+      admitted exactly 5.** The pipeline deploys.
 
 ## Plan / Milestones
 1. **Core algorithms** — fixed window counter, sliding window log, sliding
@@ -41,6 +51,10 @@ All five milestones are complete. 305 tests passing.
    5 algorithms' behaviour at burst boundaries.
 5. **Real usage (stretch goal)** — pip-installable so it can be integrated
    into real, separate applications rather than only tested synthetically.
+6. **Hosted demo** — a public page where the five algorithms can be compared
+   interactively, so the findings in `loadtest/README.md` can be *played with*
+   rather than only read. The playground must cost no Redis; only the
+   distributed-correctness punchline may, and it is budgeted.
 
 ## Key decisions
 - Language/stack: Python, FastAPI, Redis.
@@ -123,6 +137,29 @@ This is the part worth understanding before adding anything.
 - **An editable install hides packaging bugs**, since the source tree is on
   `sys.path` either way. Missing subpackages, a missing `py.typed` and a wrong
   `packages` setting only show up from a venv that cannot see the repo.
+- **Vercel never installs `[project.optional-dependencies]`.** It installs with
+  `uv sync --active --no-dev --link-mode hardlink --no-editable` and passes no
+  `--extra` — there is no `--extra`, `--all-extras` or `optional-dependencies`
+  anywhere in its Python builder. So the `demo` extra is declared and silently
+  ignored, the build *succeeds*, and the first request dies on
+  `ModuleNotFoundError: fastapi`. Fixed with `[tool.vercel.scripts]`
+  `vercel-build`, which runs *after* the default install. Deliberately not the
+  `install` hook: a custom `install` script sets `assumeDepsInstalled` and
+  replaces `uv sync` entirely, so you would then own installing the library too.
+  A committed `requirements.txt` does not help either — `pyproject.toml` wins.
+- **`rediss://` fails from this venv with a misleading error.** macOS Python
+  has no CA bundle of its own, so connecting to Upstash raises
+  `ConnectionError: ... CERTIFICATE_VERIFY_FAILED`, which reads like the server
+  being unreachable or blocking you rather than a local trust-store gap. Fix is
+  `SSL_CERT_FILE=$(python -c 'import certifi;print(certifi.where())')`, not
+  disabling verification. Local only: the Linux build image has system CA
+  certificates. Same family as the iCloud `UF_HIDDEN` gotcha — an environment
+  problem wearing a library problem's error message.
+- **Vercel refuses to guess between two FastAPI apps.** `examples/app.py` and
+  `packaging/consumer_app.py` both export `app`, so detection fails outright
+  rather than picking one. `[tool.vercel] entrypoint = "module:variable"` is
+  required, and its module path must stay in step with wherever the demo app
+  actually lives.
 
 ## Running things
 ```bash
