@@ -58,10 +58,29 @@ dev = [
     "build>=1.0",
 ]
 loadtest = ["matplotlib>=3.8"]
+# What the hosted demo needs on top of the library. Leaves only -- deliberately
+# *not* a self-reference to `drl-ratelimit[redis]`, which is unpublished, so uv
+# would try to resolve it from PyPI and fail.
+demo = ["redis>=5.0", "fastapi>=0.110"]
 
-# No [project.urls] yet: this repository has no remote, and pointing the
-# metadata at a URL that does not exist is worse than omitting it. Add
-# Homepage/Source here once there is somewhere real to point.
+[project.urls]
+Homepage = "https://github.com/grant-j-kim/distributed-rate-limiter"
+Source = "https://github.com/grant-j-kim/distributed-rate-limiter"
+
+[tool.vercel]
+# Vercel finds two FastAPI apps in this repo (examples/ and packaging/) and
+# refuses to guess. TEMPORARY: points at the algorithm demo server, which is
+# import-safe with no Redis. Repoint at the web/ demo once it exists.
+entrypoint = "examples.app:app"
+
+[tool.vercel.scripts]
+# Vercel installs dependencies with `uv sync --active --no-dev --no-editable`
+# and passes no --extra, so [project.optional-dependencies] is NEVER installed
+# -- a deploy would die on `ModuleNotFoundError: fastapi` with the `demo` extra
+# declared and ignored. This hook runs *after* that default install and adds it.
+# Use the build hook, not the install hook: a custom `install` script sets
+# assumeDepsInstalled and REPLACES uv sync entirely.
+vercel-build = "uv pip install '.[demo]'"
 
 [tool.hatch.version]
 path = "src/distributed_rate_limiter/__init__.py"
