@@ -4,99 +4,98 @@
 <title>Rate limiter playground</title>
 <style>
   :root {
-    --bg: #fbfbfa; --fg: #1a1a18; --muted: #6b6b66; --line: #d8d8d2;
-    --axis: #b4b4ac; --ok: #2f7d4f; --no: #b4462f; --accent: #1a1a18;
-    --card: #ffffff;
+    --bg: #fbfbfa; --fg: #1a1a18; --muted: #6b6b66; --line: #dedcd6;
+    --axis: #a8a89f; --ok: #2f7d4f; --no: #bf4a30; --accent: #1a1a18; --card: #fff;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #17171a; --fg: #ececea; --muted: #9a9a95; --line: #33333a;
-      --axis: #4a4a52; --ok: #5fb583; --no: #e0785e; --accent: #ececea;
-      --card: #1e1e22;
+      --bg: #17171a; --fg: #ececea; --muted: #9a9a95; --line: #34343c;
+      --axis: #55555f; --ok: #63bb88; --no: #e8805f; --accent: #ececea; --card: #1e1e23;
     }
   }
   * { box-sizing: border-box; }
-  body {
-    margin: 0; background: var(--bg); color: var(--fg);
-    font: 15px/1.55 ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
-  }
-  main { max-width: 980px; margin: 0 auto; padding: 40px 20px 80px; }
-  h1 { font-size: 26px; margin: 0 0 6px; letter-spacing: -0.01em; }
-  .lede { color: var(--muted); margin: 0 0 4px; max-width: 62ch; }
-  .provenance { color: var(--muted); font-size: 13px; margin: 14px 0 0; max-width: 62ch; }
-  .provenance a { color: inherit; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.5 ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 940px; margin: 0 auto; padding: 32px 20px 56px; }
+  h1 { font-size: 24px; margin: 0 0 6px; letter-spacing: -0.01em; }
+  .lede { color: var(--muted); margin: 0; max-width: 64ch; font-size: 14px; }
 
-  .controls {
-    display: flex; flex-wrap: wrap; align-items: center; gap: 16px;
-    margin: 28px 0 8px; padding: 16px; border: 1px solid var(--line);
-    border-radius: 10px; background: var(--card);
-  }
+  .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 14px;
+    margin: 20px 0 12px; padding: 12px 14px; border: 1px solid var(--line);
+    border-radius: 9px; background: var(--card); }
   .controls label { font-size: 13px; color: var(--muted); }
-  input[type=range] { flex: 1 1 260px; min-width: 200px; accent-color: var(--accent); }
-  .readout { font-variant-numeric: tabular-nums; font-size: 13px; min-width: 21ch; }
-  .readout strong { font-weight: 600; }
-  button {
-    font: inherit; font-size: 13px; padding: 6px 12px; cursor: pointer;
-    border: 1px solid var(--line); border-radius: 7px;
-    background: var(--card); color: var(--fg);
-  }
+  input[type=range] { flex: 1 1 240px; min-width: 180px; accent-color: var(--accent); }
+  .readout { font-variant-numeric: tabular-nums; font-size: 13px; min-width: 20ch; }
+  button { font: inherit; font-size: 13px; padding: 5px 11px; cursor: pointer;
+    border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--fg); }
   button:hover { border-color: var(--axis); }
 
-  .rows { margin-top: 22px; }
-  .row { border-top: 1px solid var(--line); padding: 12px 0 4px; }
-  .rowhead {
-    display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
-    margin-bottom: 2px;
-  }
-  .name { font-weight: 600; font-size: 14px; }
-  .ratio { font-variant-numeric: tabular-nums; font-size: 13px; color: var(--muted); }
-  .ratio b { color: var(--fg); }
+  .legend { display: flex; gap: 18px; flex-wrap: wrap; font-size: 12.5px;
+    color: var(--muted); margin: 0 0 14px; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+
+  .row { display: grid; grid-template-columns: 148px 1fr; gap: 12px;
+    align-items: center; border-top: 1px solid var(--line); padding: 5px 0; }
+  .label { min-width: 0; }
+  .name { font-size: 13px; font-weight: 600; display: block; }
+  .stat { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .stat b { color: var(--fg); font-weight: 600; }
   .scroller { overflow-x: auto; overflow-y: hidden; }
   svg { display: block; }
+  .axisrow { display: grid; grid-template-columns: 148px 1fr; gap: 12px;
+    border-top: 1px solid var(--line); padding-top: 2px; }
+  .axisrow .label { font-size: 12px; color: var(--muted); align-self: start; }
 
-  .legend {
-    display: flex; gap: 20px; flex-wrap: wrap;
-    margin-top: 26px; font-size: 13px; color: var(--muted);
+  .provenance { color: var(--muted); font-size: 12.5px; margin: 22px 0 0; max-width: 66ch; }
+  .provenance a { color: inherit; }
+
+  @media (max-width: 620px) {
+    .row, .axisrow { grid-template-columns: 1fr; gap: 3px; }
   }
-  .legend span { display: inline-flex; align-items: center; gap: 7px; }
-  .swatch { width: 26px; height: 12px; }
 </style>
 
 <main>
   <h1>Five rate limiters, one burst</h1>
   <p class="lede">
-    Sixty requests arrive in two bursts 0.3&nbsp;seconds apart, against a limit of
-    20 per 2&nbsp;second window. Slide the pair onto a window boundary and watch
+    Sixty requests arrive in two bursts 0.3&nbsp;seconds apart, against a limit
+    of 20 per 2&nbsp;second window. Slide them onto a window boundary and watch
     which algorithms notice.
   </p>
 
   <div class="controls">
-    <label for="center">Burst pair at</label>
-    <input type="range" id="center" min="0.5" max="4" step="0.01" value="2">
+    <label for="center">Bursts at</label>
+    <input type="range" id="center" min="0.5" max="3" step="0.01" value="2">
     <span class="readout" id="readout"></span>
     <button id="replay" type="button">Replay</button>
   </div>
 
-  <div class="rows" id="rows"></div>
-
   <div class="legend">
-    <span><svg class="swatch" viewBox="0 0 26 12"><circle cx="13" cy="4" r="2.6" fill="var(--ok)"/><line x1="0" y1="9" x2="26" y2="9" stroke="var(--axis)"/></svg> admitted (above the line)</span>
-    <span><svg class="swatch" viewBox="0 0 26 12"><line x1="0" y1="3" x2="26" y2="3" stroke="var(--axis)"/><circle cx="13" cy="8" r="2.6" fill="none" stroke="var(--no)" stroke-width="1.3"/></svg> rejected (below)</span>
-    <span><svg class="swatch" viewBox="0 0 26 12"><line x1="7" y1="6" x2="19" y2="6" stroke="var(--ok)"/><circle cx="7" cy="6" r="2.6" fill="none" stroke="var(--ok)" stroke-width="1.3"/><circle cx="19" cy="6" r="2.6" fill="var(--ok)"/></svg> shaped: arrived &rarr; released</span>
+    <span><svg width="30" height="14" viewBox="0 0 30 14"><line x1="0" y1="9.5" x2="30" y2="9.5" stroke="var(--axis)"/><circle cx="9" cy="5" r="1.9" fill="var(--ok)"/><circle cx="15" cy="5" r="1.9" fill="var(--ok)"/><circle cx="21" cy="5" r="1.9" fill="var(--ok)"/></svg> admitted &mdash; filled, above the line</span>
+    <span><svg width="30" height="14" viewBox="0 0 30 14"><line x1="0" y1="4.5" x2="30" y2="4.5" stroke="var(--axis)"/><circle cx="9" cy="9" r="1.9" fill="none" stroke="var(--no)" stroke-width="1.1"/><circle cx="15" cy="9" r="1.9" fill="none" stroke="var(--no)" stroke-width="1.1"/><circle cx="21" cy="9" r="1.9" fill="none" stroke="var(--no)" stroke-width="1.1"/></svg> rejected &mdash; hollow, below</span>
+    <span><svg width="34" height="14" viewBox="0 0 34 14"><line x1="6" y1="7" x2="26" y2="7" stroke="var(--ok)" stroke-width="0.9"/><circle cx="6" cy="7" r="1.9" fill="none" stroke="var(--ok)" stroke-width="1.1"/><circle cx="26" cy="7" r="1.9" fill="var(--ok)"/></svg> shaped &mdash; arrived, then released</span>
+    <span><svg width="30" height="14" viewBox="0 0 30 14"><line x1="15" y1="0" x2="15" y2="14" stroke="var(--axis)" stroke-dasharray="2 3"/></svg> window boundary</span>
   </div>
 
+  <div id="rows"></div>
+  <div class="axisrow"><div class="label">seconds</div><div class="scroller" id="axis"></div></div>
+
   <p class="provenance">
-    These numbers are computed live, here, by the real limiters running in
-    memory on a simulated clock &mdash; so they cost no Redis and no waiting.
-    They are not the published figures: those were measured against a real Redis
-    server over real time, with a network in the way, and are in
+    Computed live by the real limiters running in memory on a simulated clock,
+    so this costs no Redis and no waiting. These are not the published figures:
+    those were measured against a real Redis server over real time, with a
+    network in the way, and are in
     <a href="https://github.com/grant-j-kim/distributed-rate-limiter/blob/main/loadtest/README.md">loadtest/README.md</a>.
   </p>
 </main>
 
 <script>
-const DURATION = 9.0, W = 900, PAD = 10, PLOT = W - PAD * 2;
-const PITCH = 3.4, DOT = 1.5, ANIM_MS = 2600;
+const W = 720, PAD = 8, PLOT = W - PAD * 2;
+// Stacks wrap into sub-columns instead of growing one tall spike. A burst of 30
+// drawn as a single column is ~100px on its own, and five of those is four
+// screens of scrolling -- which defeats a comparison you are meant to read side
+// by side. Wrapping at 10 keeps every request its own mark and cuts the height
+// roughly threefold.
+const WRAP = 10, PITCH = 3.2, COLW = 3.4, DOT = 1.3, ANIM_MS = 2200;
 const NAMES = {
   fixed_window: "fixed window", sliding_window_log: "sliding window log",
   sliding_window_counter: "sliding window counter",
@@ -105,56 +104,52 @@ const NAMES = {
 const SVGNS = "http://www.w3.org/2000/svg";
 const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-const x = t => PAD + (t / DURATION) * PLOT;
+let duration = 5.5;
+const x = t => PAD + (t / duration) * PLOT;
 const el = (n, a) => { const e = document.createElementNS(SVGNS, n);
   for (const k in a) e.setAttribute(k, a[k]); return e; };
+const text = (s, a) => { const e = el("text", a); e.textContent = s; return e; };
 
-// Marks sharing an arrival instant would draw on top of each other -- a burst
-// of 30 would look like one request. Stack them off the axis instead: admitted
-// upward, rejected downward, so a burst reads as a column whose height is the
-// number admitted.
 function stack(marks) {
   const seen = new Map();
   return marks.map(m => {
     const key = (m.ok ? "a" : "r") + m.t.toFixed(4);
     const i = seen.get(key) || 0;
     seen.set(key, i + 1);
-    return { ...m, i };
+    return { ...m, col: Math.floor(i / WRAP), rank: i % WRAP };
   });
 }
 
 function drawRow(result, boundaries) {
   const marks = stack(result.marks);
-  const up = Math.max(...marks.filter(m => m.ok).map(m => m.i), 0) + 2;
-  const down = Math.max(...marks.filter(m => !m.ok).map(m => m.i), 0) + 2;
-  const axisY = up * PITCH, h = (up + down) * PITCH;
+  const depth = kind => Math.min(
+    Math.max(...marks.filter(m => m.ok === kind).map(m => m.rank + 1), 0), WRAP);
+  const up = depth(true), down = depth(false);
+  const axisY = (up + 1) * PITCH, h = (up + down + 2) * PITCH;
 
   const svg = el("svg", { width: W, height: h, viewBox: `0 0 ${W} ${h}` });
-  for (const b of boundaries) {
-    if (b < DURATION) svg.appendChild(el("line", {
-      x1: x(b), x2: x(b), y1: 0, y2: h,
-      stroke: "var(--line)", "stroke-dasharray": "2 3" }));
-  }
+  for (const b of boundaries) svg.appendChild(el("line", {
+    x1: x(b), x2: x(b), y1: 0, y2: h, stroke: "var(--axis)",
+    "stroke-dasharray": "2 3", "stroke-width": 0.8 }));
   svg.appendChild(el("line", { x1: PAD, x2: W - PAD, y1: axisY, y2: axisY,
     stroke: "var(--axis)", "stroke-width": 1 }));
 
   const timed = [];
   for (const m of marks) {
-    const y = m.ok ? axisY - (m.i + 1) * PITCH : axisY + (m.i + 1) * PITCH;
+    const y = m.ok ? axisY - (m.rank + 1) * PITCH : axisY + (m.rank + 1) * PITCH;
+    const cx = x(m.t) + m.col * COLW;
     const g = el("g", { opacity: 0 });
     if (m.ok && m.d > 0) {
-      // A shaped request has two moments: it arrived here, it was released
-      // there. Drawing only the arrival would hide the shaping entirely.
-      g.appendChild(el("line", { x1: x(m.t), x2: x(m.t + m.d), y1: y, y2: y,
+      g.appendChild(el("line", { x1: cx, x2: x(m.t + m.d), y1: y, y2: y,
+        stroke: "var(--ok)", "stroke-width": 0.8, opacity: 0.75 }));
+      g.appendChild(el("circle", { cx, cy: y, r: DOT, fill: "none",
         stroke: "var(--ok)", "stroke-width": 0.9 }));
-      g.appendChild(el("circle", { cx: x(m.t), cy: y, r: DOT,
-        fill: "none", stroke: "var(--ok)", "stroke-width": 1 }));
       g.appendChild(el("circle", { cx: x(m.t + m.d), cy: y, r: DOT, fill: "var(--ok)" }));
     } else if (m.ok) {
-      g.appendChild(el("circle", { cx: x(m.t), cy: y, r: DOT, fill: "var(--ok)" }));
+      g.appendChild(el("circle", { cx, cy: y, r: DOT, fill: "var(--ok)" }));
     } else {
-      g.appendChild(el("circle", { cx: x(m.t), cy: y, r: DOT,
-        fill: "none", stroke: "var(--no)", "stroke-width": 1 }));
+      g.appendChild(el("circle", { cx, cy: y, r: DOT, fill: "none",
+        stroke: "var(--no)", "stroke-width": 0.9 }));
     }
     svg.appendChild(g);
     timed.push({ t: m.t, g });
@@ -163,16 +158,34 @@ function drawRow(result, boundaries) {
   return { svg, timed };
 }
 
+function drawAxis(boundaries) {
+  const h = 20;
+  const svg = el("svg", { width: W, height: h, viewBox: `0 0 ${W} ${h}` });
+  svg.appendChild(el("line", { x1: PAD, x2: W - PAD, y1: 0.5, y2: 0.5,
+    stroke: "var(--axis)", "stroke-width": 1 }));
+  for (let t = 0; t <= duration + 1e-9; t += 0.5) {
+    const major = Math.abs(t - Math.round(t)) < 1e-9;
+    svg.appendChild(el("line", { x1: x(t), x2: x(t), y1: 0, y2: major ? 5 : 3,
+      stroke: "var(--axis)", "stroke-width": 0.8 }));
+    if (major) svg.appendChild(text(`${t}s`, {
+      x: x(t), y: 15, "text-anchor": "middle", "font-size": 10,
+      fill: boundaries.includes(t) ? "var(--fg)" : "var(--muted)" }));
+  }
+  return svg;
+}
+
 let sequences = [];
 
 function reveal(animate) {
-  for (const s of sequences) for (const it of s) it.g.setAttribute("opacity", 1);
+  const show = v => { for (const s of sequences) for (const it of s)
+    it.g.setAttribute("opacity", v); };
+  show(1);
   if (!animate || reduced) return;
-  for (const s of sequences) for (const it of s) it.g.setAttribute("opacity", 0);
+  show(0);
   const started = performance.now();
   const ptrs = sequences.map(() => 0);
   (function frame(now) {
-    const playhead = ((now - started) / ANIM_MS) * DURATION;
+    const playhead = ((now - started) / ANIM_MS) * duration;
     let done = true;
     sequences.forEach((s, r) => {
       while (ptrs[r] < s.length && s[ptrs[r]].t <= playhead) {
@@ -186,34 +199,35 @@ function reveal(animate) {
 
 async function render(center, animate) {
   const body = await (await fetch(`/api/replay?center=${center}`)).json();
+  duration = body.duration;
   const rows = document.getElementById("rows");
   rows.replaceChildren();
   sequences = [];
 
-  const straddles = body.boundaries.some(b =>
-    b > center - 0.15 && b < center + 0.15);
+  const straddles = body.boundaries.some(b => b > center - 0.15 && b < center + 0.15);
   document.getElementById("readout").innerHTML =
-    `<strong>${center.toFixed(2)}s</strong> &mdash; ` +
+    `<b>${center.toFixed(2)}s</b> &mdash; ` +
     (straddles ? "straddling a boundary" : "inside one window");
 
   for (const result of body.results) {
     const row = document.createElement("div");
     row.className = "row";
-    const head = document.createElement("div");
-    head.className = "rowhead";
-    head.innerHTML =
-      `<span class="name">${NAMES[result.algorithm]}</span>` +
-      `<span class="ratio">${result.allowed} of ${body.offered} admitted &middot; ` +
-      `peak <b>${result.peak}</b> in any ${body.window}s &middot; ` +
-      `<b>${result.ratio.toFixed(2)}&times;</b> the limit</span>`;
+    const label = document.createElement("div");
+    label.className = "label";
+    label.innerHTML = `<span class="name">${NAMES[result.algorithm]}</span>` +
+      `<span class="stat">${result.allowed}/${body.offered} in &middot; ` +
+      `peak <b>${result.peak}</b> &middot; <b>${result.ratio.toFixed(2)}&times;</b></span>`;
     const scroller = document.createElement("div");
     scroller.className = "scroller";
     const { svg, timed } = drawRow(result, body.boundaries);
     scroller.appendChild(svg);
-    row.append(head, scroller);
+    row.append(label, scroller);
     rows.appendChild(row);
     sequences.push(timed);
   }
+
+  const axis = document.getElementById("axis");
+  axis.replaceChildren(drawAxis(body.boundaries));
   reveal(animate);
 }
 
@@ -221,10 +235,9 @@ const slider = document.getElementById("center");
 let timer;
 slider.addEventListener("input", () => {
   clearTimeout(timer);
-  timer = setTimeout(() => render(parseFloat(slider.value), false), 70);
+  timer = setTimeout(() => render(parseFloat(slider.value), false), 60);
 });
 document.getElementById("replay").addEventListener("click",
   () => render(parseFloat(slider.value), true));
-
 render(parseFloat(slider.value), true);
 </script>

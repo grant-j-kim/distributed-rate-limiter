@@ -91,3 +91,28 @@ async def test_root_serves_the_page(client):
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
     assert "/api/replay?center=" in response.text, "page must call the endpoint"
+
+
+@pytest.mark.parametrize("center", [0.5, 2.0, 3.0])
+async def test_axis_is_long_enough_for_the_shaper(client, center):
+    """`duration` must contain every release, at both ends of the slider.
+
+    The arrivals finish by 3.15s, but the leaky bucket is still letting
+    requests through at 4.05s. An axis fitted to the arrivals would clip
+    exactly the marks that show it shaping -- and clipping is invisible, since
+    the page just draws them off the right edge.
+    """
+    body = (await client.get("/api/replay", params={"center": center})).json()
+
+    last = max(m["t"] + m["d"] for r in body["results"] for m in r["marks"] if m["ok"])
+    assert last <= body["duration"], f"releases run to {last}s, axis ends at {body['duration']}s"
+
+
+async def test_the_slider_never_leaves_the_axis(client):
+    """The upper stop must keep the burst pair on screen, releases included."""
+    from web.api import CENTER_MAX, DURATION, HALF_GAP
+
+    assert CENTER_MAX + HALF_GAP < DURATION
+    assert (await client.get("/api/replay", params={"center": CENTER_MAX})).status_code == 200
+    assert (await client.get("/api/replay",
+                             params={"center": CENTER_MAX + 0.1})).status_code == 422

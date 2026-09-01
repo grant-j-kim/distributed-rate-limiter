@@ -28,10 +28,20 @@ HALF_GAP = 0.15
 """Half the separation between the paired bursts. They sit at `center` plus and
 minus this, so the pair spans 0.30s however the slider moves it."""
 
-CONTROL_AT = WINDOW * 3.5
-"""A third burst, far from any boundary. With nothing nearby to straddle, the
-five should agree closely -- it is what shows the disagreement is a boundary
-phenomenon rather than a general one."""
+CENTER_MAX = 3.0
+"""How far the slider travels. 0.5 is mid-window, 2.0 is a boundary, 3.0 is
+mid-window again -- the whole instructive range. Going further only repeats a
+boundary, and would push the leaky bucket's releases off the right edge."""
+
+DURATION = 5.5
+"""The visible time axis. Fixed rather than fitted to each frame: an axis that
+rescaled as the slider moved would make two positions incomparable, which is
+the one thing this page exists to allow.
+
+Sized by the leaky bucket, not by the arrivals. Everything else has finished by
+`CENTER_MAX + HALF_GAP` = 3.15s, but the shaper is still releasing requests at
+5.05s, and clipping those would hide exactly the behaviour that distinguishes
+it."""
 
 ALGORITHMS = (
     "fixed_window",
@@ -48,16 +58,21 @@ app = FastAPI(
 
 
 def _schedule(center: float):
-    """Two bursts `HALF_GAP` either side of `center`, plus the control burst.
+    """Two bursts, `HALF_GAP` either side of `center`.
 
     Sliding `center` onto a window boundary is the entire experiment: the same
     sixty requests that one algorithm spreads across two windows, another
     counts once.
+
+    There is no third mid-window control burst, unlike the `boundary_burst`
+    scenario in `loadtest/`. There it was the only way to show that the
+    disagreement is a boundary phenomenon rather than a general one; here the
+    slider shows that far better, by letting the visitor walk the same burst
+    off the boundary and watch the gap close.
     """
     return merge(
         burst(center - HALF_GAP, BURST_SIZE, client="client-a"),
         burst(center + HALF_GAP, BURST_SIZE, client="client-a"),
-        burst(CONTROL_AT, BURST_SIZE, client="client-a"),
     )
 
 
@@ -66,7 +81,7 @@ async def api_replay(
     center: float = Query(
         WINDOW,
         ge=HALF_GAP,
-        le=CONTROL_AT - HALF_GAP,
+        le=CENTER_MAX,
         description="Where the burst pair sits, in seconds from the start of the run. "
         f"At {WINDOW} it straddles a window boundary.",
     ),
@@ -98,7 +113,8 @@ async def api_replay(
         "window": WINDOW,
         "center": center,
         "offered": len(schedule),
-        "boundaries": [WINDOW * i for i in range(1, int(CONTROL_AT / WINDOW) + 2)],
+        "duration": DURATION,
+        "boundaries": [WINDOW * i for i in range(1, int(DURATION / WINDOW) + 1)],
         "results": results,
     }
 
