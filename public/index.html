@@ -86,6 +86,30 @@
     network in the way, and are in
     <a href="https://github.com/grant-j-kim/distributed-rate-limiter/blob/main/loadtest/README.md">loadtest/README.md</a>.
   </p>
+
+  <hr style="border:0;border-top:1px solid var(--line);margin:34px 0 26px">
+
+  <h2 style="font-size:20px;margin:0 0 6px;letter-spacing:-0.01em">Now the hard part</h2>
+  <p class="lede">
+    Everything above is one process stepping a clock by hand. This is fifty
+    genuinely concurrent requests against a shared Redis, run twice: once
+    against a limiter that reads, decides, then writes, and once against one
+    that does all three inside a single Lua script. Both are limited to five.
+  </p>
+
+  <div class="controls">
+    <button id="race" type="button">Run the race</button>
+    <span class="readout" id="racestatus" style="min-width:28ch"></span>
+  </div>
+
+  <div id="racerows"></div>
+
+  <details id="codepanel" style="margin-top:16px">
+    <summary style="cursor:pointer;font-size:13px;color:var(--muted)">Show both implementations</summary>
+    <div id="codebody" style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:12px"></div>
+  </details>
+
+  <p class="provenance" id="rationing"></p>
 </main>
 
 <script>
@@ -240,4 +264,108 @@ slider.addEventListener("input", () => {
 document.getElementById("replay").addEventListener("click",
   () => render(parseFloat(slider.value), true));
 render(parseFloat(slider.value), true);
+</script>
+
+<script>
+const RACE_DOT = 5.2, RACE_COLS = 25;
+const raceBtn = document.getElementById("race");
+const status = document.getElementById("racestatus");
+
+function raceRow(title, note) {
+  const row = document.createElement("div");
+  row.className = "row";
+  row.innerHTML = `<div class="label"><span class="name">${title}</span>` +
+    `<span class="stat">${note}</span></div>`;
+  const holder = document.createElement("div");
+  const svg = document.createElementNS(SVGNS, "svg");
+  const rows = Math.ceil(50 / RACE_COLS);
+  svg.setAttribute("width", RACE_COLS * RACE_DOT * 1.6);
+  svg.setAttribute("height", rows * RACE_DOT * 1.9);
+  holder.appendChild(svg);
+  row.appendChild(holder);
+  document.getElementById("racerows").appendChild(row);
+  return { svg, stat: row.querySelector(".stat") };
+}
+
+function raceDot(svg, i, allowed) {
+  const cx = (i % RACE_COLS) * RACE_DOT * 1.6 + RACE_DOT;
+  const cy = Math.floor(i / RACE_COLS) * RACE_DOT * 1.9 + RACE_DOT;
+  svg.appendChild(el("circle", allowed
+    ? { cx, cy, r: RACE_DOT * 0.62, fill: "var(--ok)" }
+    : { cx, cy, r: RACE_DOT * 0.62, fill: "none", stroke: "var(--no)", "stroke-width": 1.1 }));
+}
+
+async function fireVariant(start, variant, view) {
+  const q = new URLSearchParams({ run: start.run, exp: start.exp,
+    token: start.token, variant });
+  let admitted = 0, done = 0;
+  // Fired all at once on purpose: one fetch per request, so each becomes its
+  // own invocation. Looping with await would serialise them and there would be
+  // no race left to lose.
+  await Promise.all(Array.from({ length: start.concurrency }, () =>
+    fetch(`/api/race/fire?${q}`).then(r => r.json()).then(d => {
+      raceDot(view.svg, done++, d.allowed);
+      if (d.allowed) admitted++;
+      view.stat.textContent = `${admitted} of ${done} admitted`;
+    })));
+  view.stat.innerHTML = `<b>${admitted}</b> of ${start.concurrency} admitted ` +
+    `&middot; limit <b>${start.limit}</b>`;
+  return admitted;
+}
+
+function showRecording(body) {
+  const rec = body.recording;
+  document.getElementById("racerows").replaceChildren();
+  if (!rec) { status.textContent = "no live Redis, and no recording available"; return; }
+  const naive = raceRow("naive GET/SET", "recorded");
+  const lua = raceRow("Lua, atomic", "recorded");
+  rec.naive.forEach((ok, i) => raceDot(naive.svg, i, ok));
+  rec.lua.forEach((ok, i) => raceDot(lua.svg, i, ok));
+  naive.stat.innerHTML = `<b>${rec.naive_admitted}</b> of ${rec.concurrency} admitted`;
+  lua.stat.innerHTML = `<b>${rec.lua_admitted}</b> of ${rec.concurrency} admitted`;
+  const why = { "no-redis": "no live Redis here", "per-ip": "you have used your runs for this hour",
+    budget: "this month's budget is spent", error: "the live run failed" }[body.reason] || body.reason;
+  status.innerHTML = `<b>Recording</b> &mdash; ${why}. Real run on Redis ` +
+    `${rec.redis_version}, ${rec.recorded_at.replace("T", " ").replace("+00:00", " UTC")}.` +
+    (body.detail ? ` <span style="color:var(--no)">${body.detail}</span>` : "");
+}
+
+raceBtn.addEventListener("click", async () => {
+  raceBtn.disabled = true;
+  status.textContent = "starting\u2026";
+  document.getElementById("racerows").replaceChildren();
+  try {
+    const start = await (await fetch("/api/race/start", { method: "POST" })).json();
+    document.getElementById("rationing").textContent =
+      `Every run spends real commands from a free tier, so it is rationed by ` +
+      `this project's own limiter: ${start.per_ip[0]} runs an hour per visitor, ` +
+      `${start.monthly_budget} a month overall. When that is spent you get a ` +
+      `recording, labelled as one.`;
+    if (!start.live) { showRecording(start); return; }
+
+    status.textContent = "firing 50 concurrent requests\u2026";
+    const naive = await fireVariant(start, "naive",
+      raceRow("naive GET/SET", "read, decide, write"));
+    const lua = await fireVariant(start, "lua",
+      raceRow("Lua, atomic", "one script, no gap"));
+    status.innerHTML = `Live &mdash; the naive limiter admitted <b>${naive}</b> ` +
+      `against a limit of ${start.limit}. The Lua one admitted <b>${lua}</b>.`;
+  } catch (e) {
+    status.textContent = `the live run failed: ${e}`;
+  } finally { raceBtn.disabled = false; }
+});
+
+document.getElementById("codepanel").addEventListener("toggle", async function () {
+  if (!this.open || this.dataset.loaded) return;
+  this.dataset.loaded = "1";
+  const code = await (await fetch("/api/race/code")).json();
+  const pane = (title, body) =>
+    `<div><div class="stat" style="margin-bottom:5px">${title}</div>` +
+    `<pre style="margin:0;overflow-x:auto;font-size:11px;line-height:1.45;` +
+    `background:var(--card);border:1px solid var(--line);border-radius:7px;` +
+    `padding:10px">${body.replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]))}</pre></div>`;
+  document.getElementById("codebody").innerHTML =
+    pane("naive &mdash; two round trips, one gap", code.naive) +
+    pane("Lua &mdash; one round trip, no gap", code.lua);
+});
 </script>

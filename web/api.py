@@ -13,12 +13,18 @@ dragging the slider is as fast as the arithmetic.
 
 from __future__ import annotations
 
+import inspect
+import json
 from pathlib import Path
+from typing import Literal
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 
+from distributed_rate_limiter.keys import forwarded_for_key
+
 from loadtest.traffic import burst, merge
+from web import race
 from web.replay import build, peak_admission, replay
 
 LIMIT = 20
@@ -130,3 +136,99 @@ local uvicorn behave exactly like the deployment."""
 @app.get("/", include_in_schema=False, response_class=HTMLResponse)
 async def index() -> HTMLResponse:
     return HTMLResponse(_PAGE.read_text(encoding="utf-8"))
+
+
+# ---------------------------------------------------------------- punchline
+
+_RECORDING = Path(__file__).resolve().parent / "punchline_recording.json"
+
+
+def _recording() -> dict | None:
+    """The last real run, replayed when a live one is not available.
+
+    Serving a recording is the graceful degradation; serving it *silently* is
+    not. Every response that carries one says so, and the file carries the
+    timestamp and Redis version it was produced against, so the page can show
+    where the numbers came from instead of implying they happened just now.
+    """
+    if not _RECORDING.exists():
+        return None
+    return json.loads(_RECORDING.read_text(encoding="utf-8"))
+
+
+@app.post("/api/race/start")
+async def race_start(request: Request) -> dict:
+    """Charge one run against the rationing, or hand back the recording."""
+    shape = {
+        "concurrency": race.CONCURRENCY,
+        "limit": race.RACE_LIMIT,
+        "monthly_budget": race.MONTHLY_RUNS,
+        "per_ip": [race.PER_IP_RUNS, race.PER_IP_WINDOW],
+    }
+
+    if race.redis_url() is None:
+        # No live Redis at all -- a preview deployment, or local development
+        # without one. Not an error, and not something to hide.
+        return {"live": False, "reason": "no-redis", "recording": _recording(), **shape}
+
+    client = race._client()
+    try:
+        rationing = await race.check_rationing(client, forwarded_for_key(1)(request))
+    except Exception as exc:  # noqa: BLE001 -- reported, not swallowed
+        # An unreachable Redis is information. A page about correctness that
+        # quietly swaps in a recording when the real thing fails is the one
+        # failure mode worth refusing outright.
+        return {"live": False, "reason": "error", "detail": f"{type(exc).__name__}: {exc}",
+                "recording": _recording(), **shape}
+    finally:
+        await client.aclose()
+
+    if not rationing.allowed:
+        return {"live": False, "reason": rationing.reason,
+                "retry_after": rationing.retry_after,
+                "recording": _recording(), **shape}
+
+    run_id, expires_at, token = race.new_run()
+    return {"live": True, "run": run_id, "exp": expires_at, "token": token, **shape}
+
+
+@app.get("/api/race/fire")
+async def race_fire(
+    run: str,
+    exp: float,
+    token: str,
+    variant: Literal["naive", "lua"],
+) -> dict:
+    """One request of one race. The browser calls this `CONCURRENCY` times at once.
+
+    Deliberately one check per invocation: that is what makes the requests
+    genuinely concurrent rather than a loop wearing a costume.
+    """
+    if race.redis_url() is None:
+        raise HTTPException(status_code=409, detail="no live Redis configured")
+    if not race.verify_token(run, exp, token):
+        raise HTTPException(status_code=403, detail="invalid or expired run token")
+
+    client = race._client()
+    try:
+        limiter = race.build_limiter(client, run, variant)
+        decision = await limiter.check("race")
+    finally:
+        await client.aclose()
+
+    return {"allowed": decision.allowed, "remaining": decision.remaining}
+
+
+@app.get("/api/race/code")
+async def race_code() -> dict:
+    """The two implementations, read from the running source.
+
+    Read with `inspect` rather than pasted into the page, so the code a visitor
+    is shown is necessarily the code that just ran.
+    """
+    from distributed_rate_limiter.redis_backend.fixed_window import CHECK_SCRIPT
+
+    return {
+        "naive": inspect.getsource(race.NaiveRedisFixedWindow.check),
+        "lua": CHECK_SCRIPT.strip(),
+    }
