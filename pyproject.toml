@@ -68,10 +68,9 @@ Homepage = "https://github.com/grant-j-kim/distributed-rate-limiter"
 Source = "https://github.com/grant-j-kim/distributed-rate-limiter"
 
 [tool.vercel]
-# Vercel finds two FastAPI apps in this repo (examples/ and packaging/) and
-# refuses to guess. TEMPORARY: points at the algorithm demo server, which is
-# import-safe with no Redis. Repoint at the web/ demo once it exists.
-entrypoint = "examples.app:app"
+# Vercel finds several FastAPI apps in this repo (examples/, packaging/, web/)
+# and refuses to guess, so name the one that is the deployed demo.
+entrypoint = "web.api:app"
 
 [tool.vercel.scripts]
 # Vercel installs dependencies with `uv sync --active --no-dev --no-editable`

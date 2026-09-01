@@ -188,6 +188,10 @@ This is the part worth understanding before adding anything.
 # demo server: one endpoint per algorithm, docs at /docs
 PYTHONPATH=src .venv/bin/python -m uvicorn examples.app:app --reload
 
+# the hosted playground (milestone 6). No Redis: the five in-memory limiters
+# are replayed on a driven clock, so a scenario resolves instantly and free.
+PYTHONPATH=src .venv/bin/python -m uvicorn web.api:app --reload   # then open /
+
 # load test: needs Redis running (uses DB 14), ~90s for all three scenarios
 PYTHONPATH=src .venv/bin/python -m loadtest
 PYTHONPATH=src .venv/bin/python -m loadtest --scenario boundary_burst

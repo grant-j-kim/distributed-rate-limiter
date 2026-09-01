@@ -1,0 +1,230 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rate limiter playground</title>
+<style>
+  :root {
+    --bg: #fbfbfa; --fg: #1a1a18; --muted: #6b6b66; --line: #d8d8d2;
+    --axis: #b4b4ac; --ok: #2f7d4f; --no: #b4462f; --accent: #1a1a18;
+    --card: #ffffff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #17171a; --fg: #ececea; --muted: #9a9a95; --line: #33333a;
+      --axis: #4a4a52; --ok: #5fb583; --no: #e0785e; --accent: #ececea;
+      --card: #1e1e22;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.55 ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+  }
+  main { max-width: 980px; margin: 0 auto; padding: 40px 20px 80px; }
+  h1 { font-size: 26px; margin: 0 0 6px; letter-spacing: -0.01em; }
+  .lede { color: var(--muted); margin: 0 0 4px; max-width: 62ch; }
+  .provenance { color: var(--muted); font-size: 13px; margin: 14px 0 0; max-width: 62ch; }
+  .provenance a { color: inherit; }
+
+  .controls {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 16px;
+    margin: 28px 0 8px; padding: 16px; border: 1px solid var(--line);
+    border-radius: 10px; background: var(--card);
+  }
+  .controls label { font-size: 13px; color: var(--muted); }
+  input[type=range] { flex: 1 1 260px; min-width: 200px; accent-color: var(--accent); }
+  .readout { font-variant-numeric: tabular-nums; font-size: 13px; min-width: 21ch; }
+  .readout strong { font-weight: 600; }
+  button {
+    font: inherit; font-size: 13px; padding: 6px 12px; cursor: pointer;
+    border: 1px solid var(--line); border-radius: 7px;
+    background: var(--card); color: var(--fg);
+  }
+  button:hover { border-color: var(--axis); }
+
+  .rows { margin-top: 22px; }
+  .row { border-top: 1px solid var(--line); padding: 12px 0 4px; }
+  .rowhead {
+    display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+    margin-bottom: 2px;
+  }
+  .name { font-weight: 600; font-size: 14px; }
+  .ratio { font-variant-numeric: tabular-nums; font-size: 13px; color: var(--muted); }
+  .ratio b { color: var(--fg); }
+  .scroller { overflow-x: auto; overflow-y: hidden; }
+  svg { display: block; }
+
+  .legend {
+    display: flex; gap: 20px; flex-wrap: wrap;
+    margin-top: 26px; font-size: 13px; color: var(--muted);
+  }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .swatch { width: 26px; height: 12px; }
+</style>
+
+<main>
+  <h1>Five rate limiters, one burst</h1>
+  <p class="lede">
+    Sixty requests arrive in two bursts 0.3&nbsp;seconds apart, against a limit of
+    20 per 2&nbsp;second window. Slide the pair onto a window boundary and watch
+    which algorithms notice.
+  </p>
+
+  <div class="controls">
+    <label for="center">Burst pair at</label>
+    <input type="range" id="center" min="0.5" max="4" step="0.01" value="2">
+    <span class="readout" id="readout"></span>
+    <button id="replay" type="button">Replay</button>
+  </div>
+
+  <div class="rows" id="rows"></div>
+
+  <div class="legend">
+    <span><svg class="swatch" viewBox="0 0 26 12"><circle cx="13" cy="4" r="2.6" fill="var(--ok)"/><line x1="0" y1="9" x2="26" y2="9" stroke="var(--axis)"/></svg> admitted (above the line)</span>
+    <span><svg class="swatch" viewBox="0 0 26 12"><line x1="0" y1="3" x2="26" y2="3" stroke="var(--axis)"/><circle cx="13" cy="8" r="2.6" fill="none" stroke="var(--no)" stroke-width="1.3"/></svg> rejected (below)</span>
+    <span><svg class="swatch" viewBox="0 0 26 12"><line x1="7" y1="6" x2="19" y2="6" stroke="var(--ok)"/><circle cx="7" cy="6" r="2.6" fill="none" stroke="var(--ok)" stroke-width="1.3"/><circle cx="19" cy="6" r="2.6" fill="var(--ok)"/></svg> shaped: arrived &rarr; released</span>
+  </div>
+
+  <p class="provenance">
+    These numbers are computed live, here, by the real limiters running in
+    memory on a simulated clock &mdash; so they cost no Redis and no waiting.
+    They are not the published figures: those were measured against a real Redis
+    server over real time, with a network in the way, and are in
+    <a href="https://github.com/grant-j-kim/distributed-rate-limiter/blob/main/loadtest/README.md">loadtest/README.md</a>.
+  </p>
+</main>
+
+<script>
+const DURATION = 9.0, W = 900, PAD = 10, PLOT = W - PAD * 2;
+const PITCH = 3.4, DOT = 1.5, ANIM_MS = 2600;
+const NAMES = {
+  fixed_window: "fixed window", sliding_window_log: "sliding window log",
+  sliding_window_counter: "sliding window counter",
+  token_bucket: "token bucket", leaky_bucket: "leaky bucket",
+};
+const SVGNS = "http://www.w3.org/2000/svg";
+const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+const x = t => PAD + (t / DURATION) * PLOT;
+const el = (n, a) => { const e = document.createElementNS(SVGNS, n);
+  for (const k in a) e.setAttribute(k, a[k]); return e; };
+
+// Marks sharing an arrival instant would draw on top of each other -- a burst
+// of 30 would look like one request. Stack them off the axis instead: admitted
+// upward, rejected downward, so a burst reads as a column whose height is the
+// number admitted.
+function stack(marks) {
+  const seen = new Map();
+  return marks.map(m => {
+    const key = (m.ok ? "a" : "r") + m.t.toFixed(4);
+    const i = seen.get(key) || 0;
+    seen.set(key, i + 1);
+    return { ...m, i };
+  });
+}
+
+function drawRow(result, boundaries) {
+  const marks = stack(result.marks);
+  const up = Math.max(...marks.filter(m => m.ok).map(m => m.i), 0) + 2;
+  const down = Math.max(...marks.filter(m => !m.ok).map(m => m.i), 0) + 2;
+  const axisY = up * PITCH, h = (up + down) * PITCH;
+
+  const svg = el("svg", { width: W, height: h, viewBox: `0 0 ${W} ${h}` });
+  for (const b of boundaries) {
+    if (b < DURATION) svg.appendChild(el("line", {
+      x1: x(b), x2: x(b), y1: 0, y2: h,
+      stroke: "var(--line)", "stroke-dasharray": "2 3" }));
+  }
+  svg.appendChild(el("line", { x1: PAD, x2: W - PAD, y1: axisY, y2: axisY,
+    stroke: "var(--axis)", "stroke-width": 1 }));
+
+  const timed = [];
+  for (const m of marks) {
+    const y = m.ok ? axisY - (m.i + 1) * PITCH : axisY + (m.i + 1) * PITCH;
+    const g = el("g", { opacity: 0 });
+    if (m.ok && m.d > 0) {
+      // A shaped request has two moments: it arrived here, it was released
+      // there. Drawing only the arrival would hide the shaping entirely.
+      g.appendChild(el("line", { x1: x(m.t), x2: x(m.t + m.d), y1: y, y2: y,
+        stroke: "var(--ok)", "stroke-width": 0.9 }));
+      g.appendChild(el("circle", { cx: x(m.t), cy: y, r: DOT,
+        fill: "none", stroke: "var(--ok)", "stroke-width": 1 }));
+      g.appendChild(el("circle", { cx: x(m.t + m.d), cy: y, r: DOT, fill: "var(--ok)" }));
+    } else if (m.ok) {
+      g.appendChild(el("circle", { cx: x(m.t), cy: y, r: DOT, fill: "var(--ok)" }));
+    } else {
+      g.appendChild(el("circle", { cx: x(m.t), cy: y, r: DOT,
+        fill: "none", stroke: "var(--no)", "stroke-width": 1 }));
+    }
+    svg.appendChild(g);
+    timed.push({ t: m.t, g });
+  }
+  timed.sort((a, b) => a.t - b.t);
+  return { svg, timed };
+}
+
+let sequences = [];
+
+function reveal(animate) {
+  for (const s of sequences) for (const it of s) it.g.setAttribute("opacity", 1);
+  if (!animate || reduced) return;
+  for (const s of sequences) for (const it of s) it.g.setAttribute("opacity", 0);
+  const started = performance.now();
+  const ptrs = sequences.map(() => 0);
+  (function frame(now) {
+    const playhead = ((now - started) / ANIM_MS) * DURATION;
+    let done = true;
+    sequences.forEach((s, r) => {
+      while (ptrs[r] < s.length && s[ptrs[r]].t <= playhead) {
+        s[ptrs[r]].g.setAttribute("opacity", 1); ptrs[r]++;
+      }
+      if (ptrs[r] < s.length) done = false;
+    });
+    if (!done) requestAnimationFrame(frame);
+  })(performance.now());
+}
+
+async function render(center, animate) {
+  const body = await (await fetch(`/api/replay?center=${center}`)).json();
+  const rows = document.getElementById("rows");
+  rows.replaceChildren();
+  sequences = [];
+
+  const straddles = body.boundaries.some(b =>
+    b > center - 0.15 && b < center + 0.15);
+  document.getElementById("readout").innerHTML =
+    `<strong>${center.toFixed(2)}s</strong> &mdash; ` +
+    (straddles ? "straddling a boundary" : "inside one window");
+
+  for (const result of body.results) {
+    const row = document.createElement("div");
+    row.className = "row";
+    const head = document.createElement("div");
+    head.className = "rowhead";
+    head.innerHTML =
+      `<span class="name">${NAMES[result.algorithm]}</span>` +
+      `<span class="ratio">${result.allowed} of ${body.offered} admitted &middot; ` +
+      `peak <b>${result.peak}</b> in any ${body.window}s &middot; ` +
+      `<b>${result.ratio.toFixed(2)}&times;</b> the limit</span>`;
+    const scroller = document.createElement("div");
+    scroller.className = "scroller";
+    const { svg, timed } = drawRow(result, body.boundaries);
+    scroller.appendChild(svg);
+    row.append(head, scroller);
+    rows.appendChild(row);
+    sequences.push(timed);
+  }
+  reveal(animate);
+}
+
+const slider = document.getElementById("center");
+let timer;
+slider.addEventListener("input", () => {
+  clearTimeout(timer);
+  timer = setTimeout(() => render(parseFloat(slider.value), false), 70);
+});
+document.getElementById("replay").addEventListener("click",
+  () => render(parseFloat(slider.value), true));
+
+render(parseFloat(slider.value), true);
+</script>

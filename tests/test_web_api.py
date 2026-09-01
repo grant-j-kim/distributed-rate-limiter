@@ -77,3 +77,17 @@ async def test_center_is_bounded(client):
     replay refuses -- reject it at the edge instead of raising inside."""
     assert (await client.get("/api/replay", params={"center": 0.0})).status_code == 422
     assert (await client.get("/api/replay", params={"center": 99})).status_code == 422
+
+
+async def test_root_serves_the_page(client):
+    """`/` must return the page the CDN also holds.
+
+    public/ is read at runtime rather than mounted, so an excludeFiles glob
+    that dropped it would deploy a working API behind a 500 -- and only at the
+    root, which is the one path a visitor actually opens.
+    """
+    response = await client.get("/")
+
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    assert "/api/replay?center=" in response.text, "page must call the endpoint"

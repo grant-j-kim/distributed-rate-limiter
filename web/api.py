@@ -13,7 +13,10 @@ dragging the slider is as fast as the arithmetic.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import FastAPI, Query
+from fastapi.responses import HTMLResponse
 
 from loadtest.traffic import burst, merge
 from web.replay import build, peak_admission, replay
@@ -98,3 +101,16 @@ async def api_replay(
         "boundaries": [WINDOW * i for i in range(1, int(CONTROL_AT / WINDOW) + 2)],
         "results": results,
     }
+
+
+_PAGE = Path(__file__).resolve().parent.parent / "public" / "index.html"
+"""The page lives in `public/`, which Vercel serves from its CDN at
+/index.html. It is served from the function at `/` as well, rather than
+mounted: Vercel handles `public/` at the platform level and mounting it is
+explicitly unsupported. Reading the file keeps one copy of the page and makes
+local uvicorn behave exactly like the deployment."""
+
+
+@app.get("/", include_in_schema=False, response_class=HTMLResponse)
+async def index() -> HTMLResponse:
+    return HTMLResponse(_PAGE.read_text(encoding="utf-8"))
