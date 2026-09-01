@@ -184,3 +184,31 @@ async def test_peak_is_per_key_then_maximised_never_pooled():
 
     assert sum(1 for o in outcomes if o.allowed) == 3 * LIMIT
     assert peak_admission(outcomes, WINDOW) == LIMIT
+
+
+async def test_token_bucket_boundary_burst_sits_on_a_knife_edge():
+    """22 or 23 depending on a tenth of a millisecond -- do not "fix" this.
+
+    Refill is limit/window = 10 tokens/s and the bursts are 0.30s apart, so the
+    third token arrives exactly when the second burst does. The replay is
+    exact, so it always lands on the 3-token side and reports 1.15x; the run
+    logged in loadtest/results/ dispatched 1.1ms early and reported 1.10x.
+    Both are correct.
+
+    This lives with the replay rather than in test_token_bucket.py because the
+    risk it guards against is someone adjusting the *rig* to reproduce the
+    published 22, which would mean introducing an error to match a sample.
+    """
+    from web.replay import peak_admission
+
+    def schedule_with_second_burst_at(t):
+        return merge(burst(1.85, 30, client="a"), burst(t, 30, client="a"),
+                     burst(7.0, 30, client="a"))
+
+    just_under = await replay(schedule_with_second_burst_at(2.1499),
+                              build("token_bucket", LIMIT, WINDOW))
+    exact = await replay(schedule_with_second_burst_at(2.1500),
+                         build("token_bucket", LIMIT, WINDOW))
+
+    assert peak_admission(just_under, WINDOW) == 22   # 2.999 tokens -> 1.10x
+    assert peak_admission(exact, WINDOW) == 23        # 3.000 tokens -> 1.15x

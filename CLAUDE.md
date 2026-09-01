@@ -121,6 +121,18 @@ This is the part worth understanding before adding anything.
 - **Peak admission alone ranks the token bucket with the fixed window.** Both
   measured ~2x (1.95x and 2.00x), and they mean opposite things — one is a
   configured burst allowance, the other is a forgotten window.
+- **The token bucket's `boundary_burst` figure sits on a discontinuity.**
+  Refill is `limit / window` = 10 tokens/s and the two bursts are 0.30s apart,
+  so the third token arrives at exactly the instant the second burst does.
+  Sub-millisecond dispatch jitter decides whether it counts: the run logged in
+  `loadtest/results/` was 1.1 ms early (2.990 tokens, 2 admitted, 1.10x); five
+  later runs were on time (3.000 tokens, 3 admitted, 1.15x). A 0.1 ms shift in
+  the schedule flips it, and `_EPSILON = 1e-9` is six orders of magnitude too
+  small to absorb it — widening it would be the wrong fix. Only the token
+  bucket is exposed, because only it has a *continuous* quantity crossing an
+  integer threshold; the other four hold discrete counts. Reported as a range
+  rather than re-measured or re-tuned: the discontinuity is the finding.
+  Pinned by test_token_bucket_boundary_burst_sits_on_a_knife_edge.
 - **`create_limiter` must not default `clock` to `default_clock`.** In-memory
   limiters want the local wall clock; Redis limiters want *no clock argument*,
   which is what makes them read Redis's own `TIME`. Forwarding a default here

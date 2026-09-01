@@ -52,7 +52,7 @@ well-behaved clients as a 3× violation.
 | fixed window | 60 | **40** | **2.00** |
 | sliding window log | 40 | 20 | 1.00 |
 | sliding window counter | 42 | 22 | 1.10 |
-| token bucket | 42 | 22 | 1.10 |
+| token bucket | 42–43 | 22–23 | 1.10–1.15 |
 | leaky bucket | 43 | 21 | 1.05 |
 
 **The fixed window admitted exactly twice its limit inside 0.3 seconds.** It
@@ -63,12 +63,26 @@ factor rather than approximately.
 **The sliding window log admitted exactly 20 — 1.00×.** It is the reference
 implementation of the intent, and it costs O(n) memory per key to be exact.
 
-The remaining three land between 1.05× and 1.10×, and the reasons differ: the
-counter's 1.10× is its known approximation error, the token bucket's is
+The remaining three land between 1.05× and 1.15×, and the reasons differ: the
+counter's 1.10× is its known approximation error, the token bucket's is the
 0.3 seconds of refill arriving between the two bursts, and the leaky bucket's
 1.05× is what survives after pacing. On the mid-window control burst, where
 no boundary is nearby, all five agree closely — the disagreement is a
 boundary phenomenon, not a general one.
+
+**The token bucket is the one row here that does not reproduce exactly, and
+the reason is worth more than the number.** Refill is `limit / window` =
+10 tokens/s and the bursts are 0.30s apart, so the third token arrives at
+precisely the instant the second burst does. Whether it counts is decided by
+sub-millisecond dispatch jitter: the logged run in `results/` dispatched
+1.1 ms early, giving 2.990 tokens and 2 admissions (1.10×), while five later
+runs on the same machine dispatched on time, giving 3.000 tokens and 3
+admissions (1.15×). Moving the second burst by 0.1 ms flips it. The other
+four algorithms are immune because their state is discrete — counts and log
+entries — where a millisecond changes nothing; the token bucket is the only
+one with a continuous quantity crossing an integer threshold at exactly the
+moment it is sampled. The scenario is not broken, it is sitting on a
+discontinuity, and the honest report is the range.
 
 ## 2. Steady demand at twice the sustainable rate
 

@@ -96,7 +96,7 @@ admitted in any interval one window long, wherever it falls:
 | fixed window | **2.00×** | O(1) | cheapest, and the only one that over-admits by accident |
 | sliding window log | **1.00×** | O(n) | exact, and pays for it in memory |
 | sliding window counter | **1.10×** | O(1) | the practical compromise |
-| token bucket | 1.10× | O(1) | burst size decoupled from sustained rate |
+| token bucket | 1.10–1.15× | O(1) | burst size decoupled from sustained rate; the range is a knife-edge, see `loadtest/README.md` |
 | leaky bucket | 1.05× | O(1) | shapes traffic instead of rejecting it |
 
 The fixed window admitted **40 requests against a limit of 20** when a burst
