@@ -160,3 +160,20 @@ async def test_fire_reports_the_two_numbers_that_decide_the_outcome(monkeypatch,
     assert body["allowed"] is True
     assert body["t"] > 1_700_000_000, "timestamp should be UNIX seconds from Redis"
     assert body["rtt_ms"] >= 0
+
+
+async def test_probe_reports_instance_identity(client):
+    """The probe must cost nothing and identify its instance.
+
+    It exists because two explanations for the race failing to overlap were
+    guessed and both were wrong. Counting distinct instance ids across a volley
+    is the direct measurement: one id means the platform serialised the
+    requests and no barrier can assemble them, many means the fan-out works.
+    It touches no Redis, so it stays free to run and needs no rationing.
+    """
+    first = (await client.get("/api/race/ping")).json()
+    second = (await client.get("/api/race/ping")).json()
+
+    assert first["instance"] == second["instance"], "same process, same id"
+    assert len(first["instance"]) == 8
+    assert second["age"] >= first["age"], "age should increase within one instance"

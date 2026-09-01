@@ -100,6 +100,7 @@
   <div class="controls">
     <button id="race" type="button">Run the race</button>
     <span class="readout" id="racestatus" style="min-width:28ch"></span>
+    <button id="probe" type="button">Probe concurrency</button>
   </div>
 
   <div id="racerows"></div>
@@ -404,6 +405,28 @@ raceBtn.addEventListener("click", async () => {
   } catch (e) {
     status.textContent = `the live run failed: ${e}`;
   } finally { raceBtn.disabled = false; }
+});
+
+document.getElementById("probe").addEventListener("click", async () => {
+  const btn = document.getElementById("probe");
+  btn.disabled = true;
+  status.textContent = "probing\u2026";
+  const n = 50, began = performance.now();
+  const rs = await Promise.all(Array.from({ length: n }, () =>
+    fetch("/api/race/ping").then(r => r.json())));
+  const wall = performance.now() - began;
+  const instances = new Set(rs.map(r => r.instance));
+  const ts = rs.map(r => r.t);
+  const cold = rs.filter(r => r.age < 2).length;
+  document.getElementById("overlap").innerHTML =
+    `<b>Probe:</b> ${n} requests, no Redis. Served by <b>${instances.size}</b> ` +
+    `distinct instance${instances.size > 1 ? "s" : ""}, ${cold} of them freshly ` +
+    `started. Wall clock <b>${wall.toFixed(0)}&thinsp;ms</b>; server receipt times ` +
+    `spanned <b>${((Math.max(...ts) - Math.min(...ts)) * 1000).toFixed(0)}&thinsp;ms</b>. ` +
+    `One instance means the requests were serialised and no barrier can assemble ` +
+    `a volley; many means the fan-out works and the problem is timing.`;
+  status.textContent = "probe done";
+  btn.disabled = false;
 });
 
 document.getElementById("codepanel").addEventListener("toggle", async function () {

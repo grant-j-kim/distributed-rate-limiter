@@ -17,6 +17,7 @@ import asyncio
 import inspect
 import json
 import time
+import uuid
 from pathlib import Path
 from typing import Literal
 
@@ -255,6 +256,33 @@ async def race_fire(
         # result means less.
         "late": late,
     }
+
+
+_INSTANCE = uuid.uuid4().hex[:8]
+"""Generated once when this module is imported, so it identifies the *instance*
+rather than the request. Counting distinct values across a volley is the only
+direct way to see whether the platform fanned the requests out or ran them one
+after another on a single warm instance."""
+
+_IMPORTED_AT = time.time()
+
+
+@app.get("/api/race/ping")
+async def race_ping() -> dict:
+    """A concurrency probe with no Redis, no rationing and no cost.
+
+    Two attempts to make the race overlap have now failed for reasons I
+    guessed at and got wrong. This measures the platform itself instead: fire
+    it N times at once and count distinct `instance` values. If they are all
+    the same, the requests were serialised on one instance and no barrier will
+    ever assemble a volley; if they differ, the fan-out works and the problem
+    is timing.
+
+    `age` distinguishes a cold start from a warm reuse, which is the other
+    thing worth knowing and is invisible from the outside.
+    """
+    return {"instance": _INSTANCE, "t": time.time(),
+            "age": round(time.time() - _IMPORTED_AT, 3)}
 
 
 @app.get("/api/race/code")
