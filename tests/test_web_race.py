@@ -118,3 +118,33 @@ async def test_naive_control_over_admits_against_real_redis(redis_client):
     decisions = await asyncio.gather(*(naive.check("c") for _ in range(50)))
 
     assert sum(1 for d in decisions if d.allowed) > 5
+
+
+async def test_fire_reports_the_two_numbers_that_decide_the_outcome(monkeypatch, redis_client):
+    """Every fire carries a shared-clock timestamp and its own round trip.
+
+    Without both, an admission count is uninterpretable: a read-modify-write
+    limiter is only visibly wrong while requests overlap its gap, and that gap
+    is one round trip wide. The timestamp comes from Redis rather than the
+    process, because the fires may land on different instances and comparing
+    their local clocks at millisecond scale would measure skew as stagger.
+    """
+    if redis_client is None:
+        pytest.skip("no Redis server")
+
+    from tests.conftest import REDIS_URL as TEST_REDIS_URL
+    monkeypatch.setenv("REDIS_URL", TEST_REDIS_URL)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        start = (await c.post("/api/race/start")).json()
+        if not start.get("live"):
+            pytest.skip(f"race not live: {start.get('reason')}")
+
+        body = (await c.get("/api/race/fire", params={
+            "run": start["run"], "exp": start["exp"], "token": start["token"],
+            "variant": "lua"})).json()
+
+    assert body["allowed"] is True
+    assert body["t"] > 1_700_000_000, "timestamp should be UNIX seconds from Redis"
+    assert body["rtt_ms"] >= 0

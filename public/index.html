@@ -109,6 +109,7 @@
     <div id="codebody" style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:12px"></div>
   </details>
 
+  <p class="provenance" id="overlap"></p>
   <p class="provenance" id="rationing"></p>
 </main>
 
@@ -295,10 +296,14 @@ function raceDot(svg, i, allowed) {
     : { cx, cy, r: RACE_DOT * 0.62, fill: "none", stroke: "var(--no)", "stroke-width": 1.1 }));
 }
 
+const median = xs => { const s = [...xs].sort((a, b) => a - b);
+  return s[Math.floor(s.length / 2)]; };
+
 async function fireVariant(start, variant, view) {
   const q = new URLSearchParams({ run: start.run, exp: start.exp,
     token: start.token, variant });
   let admitted = 0, done = 0;
+  const stamps = [], rtts = [];
   // Fired all at once on purpose: one fetch per request, so each becomes its
   // own invocation. Looping with await would serialise them and there would be
   // no race left to lose.
@@ -306,11 +311,20 @@ async function fireVariant(start, variant, view) {
     fetch(`/api/race/fire?${q}`).then(r => r.json()).then(d => {
       raceDot(view.svg, done++, d.allowed);
       if (d.allowed) admitted++;
+      stamps.push(d.t); rtts.push(d.rtt_ms);
       view.stat.textContent = `${admitted} of ${done} admitted`;
     })));
+
+  // The two numbers that decide the outcome. A read-modify-write limiter is
+  // only visibly wrong while requests overlap: its vulnerable gap is one Redis
+  // round trip, so if arrivals are spread wider than that, each one reads what
+  // the last one wrote and it behaves perfectly. Reporting the count without
+  // these leaves the result uninterpretable.
+  const spread = (Math.max(...stamps) - Math.min(...stamps)) * 1000;
+  const rtt = median(rtts);
   view.stat.innerHTML = `<b>${admitted}</b> of ${start.concurrency} admitted ` +
     `&middot; limit <b>${start.limit}</b>`;
-  return admitted;
+  return { admitted, spread, rtt };
 }
 
 function showRecording(body) {
@@ -343,13 +357,26 @@ raceBtn.addEventListener("click", async () => {
       `recording, labelled as one.`;
     if (!start.live) { showRecording(start); return; }
 
-    status.textContent = "firing 50 concurrent requests\u2026";
+    status.textContent = `firing ${start.concurrency} concurrent requests\u2026`;
     const naive = await fireVariant(start, "naive",
       raceRow("naive GET/SET", "read, decide, write"));
     const lua = await fireVariant(start, "lua",
       raceRow("Lua, atomic", "one script, no gap"));
-    status.innerHTML = `Live &mdash; the naive limiter admitted <b>${naive}</b> ` +
-      `against a limit of ${start.limit}. The Lua one admitted <b>${lua}</b>.`;
+
+    const raced = naive.spread < naive.rtt * start.concurrency;
+    status.innerHTML =
+      `Live &mdash; naive admitted <b>${naive.admitted}</b> against a limit of ` +
+      `${start.limit}; Lua admitted <b>${lua.admitted}</b>.`;
+    document.getElementById("overlap").innerHTML =
+      `Those ${start.concurrency} requests reached Redis within ` +
+      `<b>${naive.spread.toFixed(1)}&thinsp;ms</b> of each other, and one Redis ` +
+      `round trip took <b>${naive.rtt.toFixed(2)}&thinsp;ms</b>. That ratio is the ` +
+      `whole mechanism: the naive limiter's gap between reading and writing is ` +
+      `one round trip wide, so it is only visibly wrong while requests overlap ` +
+      `it. ` + (naive.admitted > start.limit
+        ? `They did, and it let ${naive.admitted - start.limit} through that it should not have.`
+        : `This time they did not overlap enough, so it happened to behave ` +
+          `correctly &mdash; which is what makes this bug so easy to ship.`);
   } catch (e) {
     status.textContent = `the live run failed: ${e}`;
   } finally { raceBtn.disabled = false; }

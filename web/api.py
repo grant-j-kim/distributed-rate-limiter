@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import time
 from pathlib import Path
 from typing import Literal
 
@@ -23,6 +24,7 @@ from fastapi.responses import HTMLResponse
 
 from distributed_rate_limiter.keys import forwarded_for_key
 
+from loadtest.runner import redis_now
 from loadtest.traffic import burst, merge
 from web import race
 from web.replay import build, peak_admission, replay
@@ -212,11 +214,27 @@ async def race_fire(
     client = race._client()
     try:
         limiter = race.build_limiter(client, run, variant)
+        # Timestamp from Redis, not from this process. The fifty fires may land
+        # on different instances, and comparing their local clocks at the
+        # millisecond scale -- which is exactly the scale that decides whether
+        # a race happens -- would measure clock skew as if it were stagger.
+        # Reading the store's own clock is the same reasoning that makes the
+        # Redis limiters call TIME instead of taking a clock argument.
+        started = await redis_now(client)
+        elapsed = time.perf_counter()
         decision = await limiter.check("race")
+        # A duration is local, so perf_counter is right here: no cross-instance
+        # comparison is involved, and it excludes the TIME round trip above.
+        elapsed = (time.perf_counter() - elapsed) * 1000
     finally:
         await client.aclose()
 
-    return {"allowed": decision.allowed, "remaining": decision.remaining}
+    return {
+        "allowed": decision.allowed,
+        "remaining": decision.remaining,
+        "t": started,
+        "rtt_ms": round(elapsed, 3),
+    }
 
 
 @app.get("/api/race/code")
