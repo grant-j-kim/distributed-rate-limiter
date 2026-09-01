@@ -35,7 +35,10 @@ All six milestones are complete. 334 tests passing.
       server it was served by **34 separate instances**, arriving within
       **1.68 ms** of each other against a **33.7 ms** round trip: the naive
       `ZCOUNT`/`ZADD` control admitted **43 of 50** against a limit of 5, the
-      Lua limiter **exactly 5**. Rationed by this project's own limiters (10
+      Lua limiter **exactly 5**. It reproduces: a second run recorded against
+      the deployed site was served by **49** instances and admitted **44 of 50**
+      versus exactly 5, on Upstash Redis 8.2.0. Rationed by this project's own
+      limiters (10
       runs/hour per IP, 1000/month global, both sliding window counters), with
       a committed recording as the labelled fallback.
 
