@@ -6,9 +6,7 @@ can make in a given time window, and works correctly across multiple distributed
 server instances (not just a single in-memory process).
 
 ## Status
-The five library milestones are complete. 305 tests passing.
-Milestone 6 (hosted demo) is in progress: both deployment blockers
-are resolved, no demo code written yet.
+All six milestones are complete. 334 tests passing.
 
 - [x] **1. Core algorithms** — all five, in-memory, in `memory/`.
 - [x] **2. Middleware layer** — `RateLimitMiddleware` + `@rate_limit`, in
@@ -27,14 +25,18 @@ are resolved, no demo code written yet.
       throwaway venv outside the repo and runs a real FastAPI app against it:
       **50 of 120 concurrent admitted against a limit of 50, identical with
       one server process and with two.** Not published to PyPI.
-- [ ] **6. Hosted demo (in progress)** — an interactive demo on Vercel in
-      `web/`: a five-algorithm comparison playground replaying an arrival
-      schedule against the *in-memory* limiters on a driven clock (instant,
-      zero Redis), plus a rationed live punchline against Upstash. Both
-      spikes are green: `redis.call('TIME')` works inside Lua on Upstash, and
-      the race reproduces there exactly as locally — **the naive GET/SET
-      control admitted 50 of 50 against a limit of 5; the Lua limiter
-      admitted exactly 5.** The pipeline deploys.
+- [x] **6. Hosted demo** — deployed on Vercel from `web/`, with `public/` for
+      the page. Two halves. The **playground** replays an arrival schedule
+      against the *in-memory* limiters on a driven clock: instant, deterministic
+      and costing no Redis, and it reproduces four of the five measured peaks
+      exactly (the token bucket sits on a knife edge, see Gotchas). The
+      **punchline** runs a real 50-way race on Upstash. Fanned out from the
+      server it was served by **34 separate instances**, arriving within
+      **1.68 ms** of each other against a **33.7 ms** round trip: the naive
+      `ZCOUNT`/`ZADD` control admitted **43 of 50** against a limit of 5, the
+      Lua limiter **exactly 5**. Rationed by this project's own limiters (10
+      runs/hour per IP, 1000/month global, both sliding window counters), with
+      a committed recording as the labelled fallback.
 
 ## Plan / Milestones
 1. **Core algorithms** — fixed window counter, sliding window log, sliding
@@ -167,6 +169,34 @@ This is the part worth understanding before adding anything.
   disabling verification. Local only: the Linux build image has system CA
   certificates. Same family as the iCloud `UF_HIDDEN` gotcha — an environment
   problem wearing a library problem's error message.
+- **A browser cannot stage a distributed race against Vercel.** Fifty
+  concurrent `fetch` calls reached the deployment **110 ms apart, one at a
+  time, all on one already-warm instance** — one network round trip each, so
+  nothing ever overlapped. Two barrier leads (2s, then 8s) changed nothing,
+  because lead time was never the constraint: the requests were not concurrent
+  to begin with. Fanning the same fifty out *from the server* instead put them
+  on **34 instances within 1.68 ms**. `/api/race/ping` exists to measure this
+  directly — count distinct instance ids — because the cause was guessed wrong
+  twice before it was measured once.
+- **A barrier only works if its participants already exist.** Every fire sleeps
+  until a shared instant on Redis's clock so invocation stagger lands in the
+  sleep rather than the measurement — the same trick as `loadtest`'s
+  `next_boundary`. But with browser-issued requests, 49 of 50 started *after*
+  the barrier had passed and fired alone. A barrier cannot synchronise a
+  request that has not been made yet.
+- **Never race a fixed window.** The punchline first used one, and a run
+  spanning 7.3 s crossed a 10 s boundary and admitted 5 + 5 = **10 against a
+  limit of 5** — on the page that read as *atomicity* failing, which is the
+  opposite of true. It was the 2.00x boundary burst this project documents
+  elsewhere, arriving where it did the most damage. Both sides now use the
+  sliding window log, which is exact wherever it falls; the naive control is
+  its faithful counterpart, so atomicity is the only difference between them.
+- **Open the Redis client once per instance, not once per request.** A client
+  per invocation means a TLS handshake to Upstash every time, and that cost is
+  most of what spread those requests out. Cache it at module scope and leave it
+  open. Size the pool generously too: a tight cap raises `MaxConnectionsError`,
+  and the obvious fix — a blocking pool — is worse, because queueing for a
+  connection *serialises* the requests and destroys the overlap the race needs.
 - **Vercel refuses to guess between two FastAPI apps.** `examples/app.py` and
   `packaging/consumer_app.py` both export `app`, so detection fails outright
   rather than picking one. `[tool.vercel] entrypoint = "module:variable"` is

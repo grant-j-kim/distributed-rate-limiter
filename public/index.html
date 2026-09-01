@@ -100,7 +100,7 @@
   <div class="controls">
     <button id="race" type="button">Run the race</button>
     <span class="readout" id="racestatus" style="min-width:28ch"></span>
-    <button id="probe" type="button">Probe concurrency</button>
+    <button id="probe" type="button">Why not from the browser?</button>
   </div>
 
   <div id="racerows"></div>
@@ -433,8 +433,10 @@ document.getElementById("probe").addEventListener("click", async () => {
     `distinct instance${instances.size > 1 ? "s" : ""}, ${cold} of them freshly ` +
     `started. Wall clock <b>${wall.toFixed(0)}&thinsp;ms</b>; server receipt times ` +
     `spanned <b>${((Math.max(...ts) - Math.min(...ts)) * 1000).toFixed(0)}&thinsp;ms</b>. ` +
-    `One instance means the requests were serialised and no barrier can assemble ` +
-    `a volley; many means the fan-out works and the problem is timing.`;
+    `That is why the race above is fired from the server rather than from here: ` +
+    `the browser cannot get fifty requests into the air at once, so nothing ` +
+    `overlaps and there is no race to lose. Same fifty requests, different ` +
+    `issuer, opposite result.`;
   status.textContent = "probe done";
   btn.disabled = false;
 });
