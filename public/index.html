@@ -299,6 +299,21 @@ function raceDot(svg, i, allowed) {
 const median = xs => { const s = [...xs].sort((a, b) => a - b);
   return s[Math.floor(s.length / 2)]; };
 
+let ticking;
+function countdown(seconds, label) {
+  clearInterval(ticking);
+  const until = performance.now() + seconds * 1000;
+  const tick = () => {
+    const left = Math.max(0, (until - performance.now()) / 1000);
+    status.textContent = left > 0.05
+      ? `${label}\u2026 ${left.toFixed(1)}s`
+      : `${label}\u2026 firing`;
+    if (left <= 0.05) clearInterval(ticking);
+  };
+  tick();
+  ticking = setInterval(tick, 100);
+}
+
 async function fireVariant(start, variant, view) {
   const q = new URLSearchParams({ run: start.run, exp: start.exp,
     start: start.start, token: start.token, variant });
@@ -358,9 +373,15 @@ raceBtn.addEventListener("click", async () => {
       `recording, labelled as one.`;
     if (!start.live) { showRecording(start); return; }
 
-    status.textContent = `${start.concurrency} requests waiting for the barrier\u2026`;
+    // The volley waits on a barrier so the requests actually collide, and the
+    // instances have to spin up before it fires. That is ~15s of mostly
+    // waiting, which looks like a hung page unless it is narrated.
+    countdown(start.lead, `${start.concurrency} requests spinning up, then firing together`);
     const naive = await fireVariant(start, "naive",
       raceRow("naive GET/SET", "read, decide, write"));
+    // The naive volley resolves at the barrier, and the atomic one fires PHASE
+    // later, so PHASE is exactly what is left to wait.
+    countdown(start.phase, "second volley assembling");
     const lua = await fireVariant(start, "lua",
       raceRow("Lua, atomic", "one script, no gap"));
 

@@ -71,8 +71,16 @@ day of one window and the whole of it again on the first day of the next --
 2x the intended spend across a few hours. That is this project's own headline
 finding, and it would be an embarrassing way to run out of credit."""
 
-LEAD = 2.0
+LEAD = 8.0
 """How long after `/start` the first volley fires.
+
+Eight seconds because the participants have to *exist* first. Measured in
+production with a 2s lead, 49 of the 50 requests started after the barrier had
+already passed: the first request spins up an instance which then sleeps, and
+Vercel cold-starts the rest at roughly 113ms each, so fifty of them take about
+5.7 seconds to assemble. A barrier that fires before its participants are alive
+is not a barrier. They do come up in parallel with the first one waiting -- the
+5664ms spread showed that -- so the fix is lead time, not a different design.
 
 Every fire sleeps until a common instant on Redis's clock before touching it,
 so invocation stagger is absorbed by the sleep instead of landing in the
@@ -87,9 +95,12 @@ being measured must not be at the mercy of when the harness happened to start.
 The gap is untouched and the limiters are unmodified -- the only thing removed
 is the scheduler."""
 
-PHASE = 4.0
+PHASE = 6.0
 """Seconds between the naive volley and the atomic one, so the two do not
-contend for connections or instances while each is being measured."""
+contend for connections or instances while each is being measured.
+
+Shorter than LEAD because the second volley reuses instances the first one
+already warmed, so they assemble far faster than from cold."""
 
 TOKEN_TTL = 120.0
 """How long a run token stays valid. Long enough for fifty round trips on a bad
