@@ -52,12 +52,18 @@ production: 50 requests spread over 7.3s crossed a 10s boundary and admitted
 5 + 5. The sliding log is exact wherever it falls, so "exactly 5" holds
 whenever a visitor happens to press the button."""
 
-PER_IP_RUNS, PER_IP_WINDOW = 3, 3600.0
+PER_IP_RUNS, PER_IP_WINDOW = 10, 3600.0
 MONTHLY_RUNS, MONTHLY_WINDOW = 1000, 30 * 24 * 3600.0
 """A run costs about 300 Redis commands: each naive fire spends TIME, ZCOUNT,
 ZADD and EXPIRE, and each atomic fire spends TIME and one EVALSHA. 1000 runs is
 roughly 300k against a free tier of 500k per month, which leaves real margin --
 1500 would not.
+
+The two limits answer different questions, and only the global one protects
+the free tier: the per-IP limit stops a single visitor monopolising the demo
+and says nothing about the total. Ten an hour is enough to stop that while
+still letting someone press the button a few times and watch the numbers move,
+which is most of the point.
 
 The monthly budget uses a **sliding window counter, not a fixed window**. A
 month-long fixed window would let someone spend the whole budget on the last
