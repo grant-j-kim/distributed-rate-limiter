@@ -363,46 +363,56 @@ function showRecording(body) {
 
 raceBtn.addEventListener("click", async () => {
   raceBtn.disabled = true;
-  status.textContent = "starting\u2026";
+  clearInterval(ticking);
   document.getElementById("racerows").replaceChildren();
   try {
-    const start = await (await fetch("/api/race/start", { method: "POST" })).json();
+    // One request. The server issues the fifty, because the browser cannot:
+    // measured against this deployment, fifty concurrent fetches arrived 110ms
+    // apart, one at a time, and never overlapped.
+    countdown(7, "server firing two volleys");
+    const body = await (await fetch("/api/race/run", { method: "POST" })).json();
+    clearInterval(ticking);
+
     document.getElementById("rationing").textContent =
       `Every run spends real commands from a free tier, so it is rationed by ` +
-      `this project's own limiter: ${start.per_ip[0]} runs an hour per visitor, ` +
-      `${start.monthly_budget} a month overall. When that is spent you get a ` +
+      `this project's own limiter: ${body.per_ip[0]} runs an hour per visitor, ` +
+      `${body.monthly_budget} a month overall. When that is spent you get a ` +
       `recording, labelled as one.`;
-    if (!start.live) { showRecording(start); return; }
+    if (!body.live) { showRecording(body); return; }
 
-    // The volley waits on a barrier so the requests actually collide, and the
-    // instances have to spin up before it fires. That is ~15s of mostly
-    // waiting, which looks like a hung page unless it is narrated.
-    countdown(start.lead, `${start.concurrency} requests spinning up, then firing together`);
-    const naive = await fireVariant(start, "naive",
-      raceRow("naive GET/SET", "read, decide, write"));
-    // The naive volley resolves at the barrier, and the atomic one fires PHASE
-    // later, so PHASE is exactly what is left to wait.
-    countdown(start.phase, "second volley assembling");
-    const lua = await fireVariant(start, "lua",
-      raceRow("Lua, atomic", "one script, no gap"));
+    const naive = body.variants.naive, lua = body.variants.lua;
+    for (const [title, note, v] of [
+      ["naive GET/SET", "count, decide, append", naive],
+      ["Lua, atomic", "one script, no gap", lua]]) {
+      const view = raceRow(title, note);
+      v.allowed.forEach((ok, i) => raceDot(view.svg, i, ok));
+      view.stat.innerHTML = `<b>${v.admitted}</b> of ${v.fired} admitted ` +
+        `&middot; limit <b>${body.limit}</b>`;
+    }
 
-    const raced = naive.spread < naive.rtt * start.concurrency;
-    status.innerHTML =
-      `Live &mdash; naive admitted <b>${naive.admitted}</b> against a limit of ` +
-      `${start.limit}; Lua admitted <b>${lua.admitted}</b>.`;
+    status.innerHTML = `Live &mdash; naive admitted <b>${naive.admitted}</b> ` +
+      `against a limit of ${body.limit}; Lua admitted <b>${lua.admitted}</b>.`;
+
+    // Say only what the instance count supports.
+    const scope = naive.instances > 1
+      ? `across <b>${naive.instances}</b> instances`
+      : `on a single instance, interleaved on one event loop`;
     document.getElementById("overlap").innerHTML =
-      `Those ${start.concurrency} requests reached Redis within ` +
-      `<b>${naive.spread.toFixed(1)}&thinsp;ms</b> of each other, and one Redis ` +
-      `round trip took <b>${naive.rtt.toFixed(2)}&thinsp;ms</b>. That ratio is the ` +
-      `whole mechanism: the naive limiter's gap between reading and writing is ` +
-      `one round trip wide, so it is only visibly wrong while requests overlap ` +
-      `it. ` + (naive.late ? `${naive.late} request${naive.late > 1 ? "s" : ""} ` +
-        `started after the barrier and missed the volley. ` : "") +
-      (naive.admitted > start.limit
-        ? `They did, and it let ${naive.admitted - start.limit} through that it should not have.`
+      `Those ${naive.fired} requests were served ${scope} and reached Redis ` +
+      `within <b>${naive.spread_ms}&thinsp;ms</b> of each other, while one Redis ` +
+      `round trip took <b>${naive.rtt_ms}&thinsp;ms</b>. That ratio is the whole ` +
+      `mechanism: the naive limiter's gap between reading and writing is one ` +
+      `round trip wide, so it is only visibly wrong while requests overlap it. ` +
+      (naive.late ? `${naive.late} missed the barrier. ` : "") +
+      (naive.failed ? `${naive.failed} failed outright. ` : "") +
+      (naive.admitted > body.limit
+        ? `They did overlap, and it let ${naive.admitted - body.limit} through ` +
+          `that it should not have. The atomic one, same algorithm and same ` +
+          `traffic, admitted exactly ${body.limit}.`
         : `This time they did not overlap enough, so it happened to behave ` +
           `correctly &mdash; which is what makes this bug so easy to ship.`);
   } catch (e) {
+    clearInterval(ticking);
     status.textContent = `the live run failed: ${e}`;
   } finally { raceBtn.disabled = false; }
 });

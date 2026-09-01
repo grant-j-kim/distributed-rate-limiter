@@ -146,6 +146,14 @@ async def index() -> HTMLResponse:
 
 _RECORDING = Path(__file__).resolve().parent / "punchline_recording.json"
 
+_INSTANCE = uuid.uuid4().hex[:8]
+"""Generated once when this module is imported, so it identifies the *instance*
+rather than the request. Counting distinct values across a volley is the only
+direct way to see whether the platform fanned the requests out or ran them one
+after another on a single warm instance."""
+
+_IMPORTED_AT = time.time()
+
 
 def _recording() -> dict | None:
     """The last real run, replayed when a live one is not available.
@@ -160,9 +168,13 @@ def _recording() -> dict | None:
     return json.loads(_RECORDING.read_text(encoding="utf-8"))
 
 
-@app.post("/api/race/start")
-async def race_start(request: Request) -> dict:
-    """Charge one run against the rationing, or hand back the recording."""
+async def _authorise_run(request: Request) -> dict:
+    """Charge one run against the rationing and mint a signed barrier token.
+
+    Shared by `/start` and `/run` so the two cannot drift into charging
+    differently -- rationing that depends on which endpoint you call is
+    rationing that can be walked around.
+    """
     shape = {
         "concurrency": race.CONCURRENCY,
         "limit": race.RACE_LIMIT,
@@ -196,6 +208,82 @@ async def race_start(request: Request) -> dict:
     run_id, expires_at, token = race.new_run(start_at)
     return {"live": True, "run": run_id, "exp": expires_at, "token": token,
             "start": start_at, "lead": race.LEAD, "phase": race.PHASE, **shape}
+
+
+@app.post("/api/race/start")
+async def race_start(request: Request) -> dict:
+    """Charge one run and hand back a token, or hand back the recording."""
+    return await _authorise_run(request)
+
+
+def _self_base_url(request: Request) -> str:
+    """This deployment's own origin, for fanning out to.
+
+    Built from the forwarded headers rather than `request.base_url`, which
+    behind Vercel's proxy reports the internal scheme and would produce an
+    unreachable http:// URL for a site served over https.
+    """
+    host = request.headers.get("host") or request.url.netloc
+    scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
+    return f"{scheme}://{host}"
+
+
+@app.post("/api/race/run")
+async def race_run(request: Request) -> dict:
+    """Run both volleys by fanning out from the server, and report what happened.
+
+    The browser cannot stage this. Measured against the deployed site, fifty
+    `fetch` calls issued at once arrived at the server 110ms apart, one at a
+    time, all on a single warm instance -- one network round trip each, so
+    nothing ever overlapped and no barrier could assemble a volley.
+
+    Issuing the fifty from here instead means they leave together and arrive
+    together. Whether the platform then spreads them across instances is not
+    something to assert: every fire reports the instance that served it, and
+    the count comes back in the response. More than one is a genuinely
+    distributed race; exactly one is fifty concurrent requests interleaving on
+    a single event loop, which opens the same read-modify-write gap and is
+    still a real race -- just a narrower claim, and the number is what makes
+    the page say the narrower thing.
+    """
+    import httpx
+
+    authorised = await _authorise_run(request)
+    if not authorised.get("live"):
+        return authorised
+
+    query = {"run": authorised["run"], "exp": authorised["exp"],
+             "start": authorised["start"], "token": authorised["token"]}
+    base = _self_base_url(request)
+    variants: dict[str, dict] = {}
+
+    limits = httpx.Limits(max_connections=race.CONCURRENCY + 10)
+    async with httpx.AsyncClient(base_url=base, timeout=60, limits=limits) as client:
+        for variant in ("naive", "lua"):
+            responses = await asyncio.gather(*(
+                client.get("/api/race/fire", params={**query, "variant": variant})
+                for _ in range(race.CONCURRENCY)), return_exceptions=True)
+
+            fires = [r.json() for r in responses
+                     if not isinstance(r, Exception) and r.status_code == 200]
+            failed = race.CONCURRENCY - len(fires)
+            stamps = sorted(f["t"] for f in fires)
+            rtts = sorted(f["rtt_ms"] for f in fires)
+
+            variants[variant] = {
+                "allowed": [f["allowed"] for f in fires],
+                "admitted": sum(1 for f in fires if f["allowed"]),
+                "fired": len(fires),
+                "failed": failed,
+                "late": sum(1 for f in fires if f.get("late")),
+                "instances": len({f["instance"] for f in fires}),
+                "spread_ms": round((stamps[-1] - stamps[0]) * 1000, 2) if stamps else 0.0,
+                "rtt_ms": rtts[len(rtts) // 2] if rtts else 0.0,
+            }
+
+    return {"live": True, "variants": variants,
+            **{k: v for k, v in authorised.items()
+               if k in ("concurrency", "limit", "monthly_budget", "per_ip")}}
 
 
 @app.get("/api/race/fire")
@@ -255,16 +343,11 @@ async def race_fire(
         # never joined the volley, and a run full of stragglers is a run whose
         # result means less.
         "late": late,
+        # Which instance served this fire. Counting distinct values across a
+        # volley is what lets the page claim "across instances" only when it
+        # is true.
+        "instance": _INSTANCE,
     }
-
-
-_INSTANCE = uuid.uuid4().hex[:8]
-"""Generated once when this module is imported, so it identifies the *instance*
-rather than the request. Counting distinct values across a volley is the only
-direct way to see whether the platform fanned the requests out or ran them one
-after another on a single warm instance."""
-
-_IMPORTED_AT = time.time()
 
 
 @app.get("/api/race/ping")

@@ -61,7 +61,10 @@ loadtest = ["matplotlib>=3.8"]
 # What the hosted demo needs on top of the library. Leaves only -- deliberately
 # *not* a self-reference to `drl-ratelimit[redis]`, which is unpublished, so uv
 # would try to resolve it from PyPI and fail.
-demo = ["redis>=5.0", "fastapi>=0.110"]
+# httpx: the punchline fans its volley out from the server, because the
+# browser could not issue fifty concurrent requests -- measured at 110ms
+# apart, one at a time.
+demo = ["redis>=5.0", "fastapi>=0.110", "httpx>=0.27"]
 
 [project.urls]
 Homepage = "https://github.com/grant-j-kim/distributed-rate-limiter"

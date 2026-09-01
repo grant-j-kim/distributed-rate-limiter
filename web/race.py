@@ -71,16 +71,19 @@ day of one window and the whole of it again on the first day of the next --
 2x the intended spend across a few hours. That is this project's own headline
 finding, and it would be an embarrassing way to run out of credit."""
 
-LEAD = 8.0
+LEAD = 3.0
 """How long after `/start` the first volley fires.
 
-Eight seconds because the participants have to *exist* first. Measured in
-production with a 2s lead, 49 of the 50 requests started after the barrier had
-already passed: the first request spins up an instance which then sleeps, and
-Vercel cold-starts the rest at roughly 113ms each, so fifty of them take about
-5.7 seconds to assemble. A barrier that fires before its participants are alive
-is not a barrier. They do come up in parallel with the first one waiting -- the
-5664ms spread showed that -- so the fix is lead time, not a different design.
+Three seconds, because the volley is now issued from the server rather than the
+browser and the requests leave together.
+
+Lead time alone was never the problem. Raising it from 2s to 8s changed nothing:
+spread stayed at ~5.9s and 49 of 50 still missed the barrier. A probe with Redis
+removed found why -- fifty `fetch` calls from the browser reached the server
+110ms apart, one at a time, all on a single warm instance. One network round
+trip each. They were never concurrent, so no barrier of any length could
+assemble them. The lead is kept as insurance against arrival jitter, not as the
+mechanism.
 
 Every fire sleeps until a common instant on Redis's clock before touching it,
 so invocation stagger is absorbed by the sleep instead of landing in the
@@ -95,7 +98,7 @@ being measured must not be at the mercy of when the harness happened to start.
 The gap is untouched and the limiters are unmodified -- the only thing removed
 is the scheduler."""
 
-PHASE = 6.0
+PHASE = 3.0
 """Seconds between the naive volley and the atomic one, so the two do not
 contend for connections or instances while each is being measured.
 
