@@ -101,6 +101,7 @@
     <button id="race" type="button">Run the race</button>
     <span class="readout" id="racestatus" style="min-width:28ch"></span>
     <button id="probe" type="button">Why not from the browser?</button>
+    <span class="stat" id="usage"></span>
   </div>
 
   <div id="racerows"></div>
@@ -300,6 +301,18 @@ function raceDot(svg, i, allowed) {
 const median = xs => { const s = [...xs].sort((a, b) => a - b);
   return s[Math.floor(s.length / 2)]; };
 
+// The limiter reports the quota on every response, spent or not. Reading it
+// from the headers is the only way to show usage without spending a run:
+// check() both decides and records, so there is no asking without consuming.
+function showUsage(res) {
+  const limit = res.headers.get("X-RateLimit-Limit");
+  const left = res.headers.get("X-RateLimit-Remaining");
+  if (limit === null || left === null) return;
+  const used = Math.max(0, Number(limit) - Number(left));
+  document.getElementById("usage").textContent =
+    `${used}/${limit} runs used this hour`;
+}
+
 let ticking;
 function countdown(seconds, label) {
   clearInterval(ticking);
@@ -374,6 +387,7 @@ raceBtn.addEventListener("click", async () => {
     countdown(7, "server firing two volleys");
     const res = await fetch("/api/race/run", { method: "POST" });
     clearInterval(ticking);
+    showUsage(res);
     // A spent quota now comes back as a real 429 with Retry-After -- this
     // package's own decorator answering for its own demo. The recording is a
     // separate, unrationed fetch rather than a consolation payload smuggled
