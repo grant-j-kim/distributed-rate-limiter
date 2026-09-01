@@ -70,11 +70,15 @@ day of one window and the whole of it again on the first day of the next --
 2x the intended spend across a few hours. That is this project's own headline
 finding, and it would be an embarrassing way to run out of credit."""
 
-LEAD = 3.0
+LEAD = 2.0
 """How long after `/start` the first volley fires.
 
-Three seconds, because the volley is now issued from the server rather than the
-browser and the requests leave together.
+Two seconds. The volley is issued from the server, so the fifty requests leave
+together and only need enough lead for Vercel to have an instance ready for
+each -- up to 49 of them, cold. Three seconds measured zero stragglers, which
+proved there was headroom without saying how much, so this trims it and lets
+the `late` counter report the truth: any fire that starts after the barrier is
+counted and shown on the page, so cutting too far is visible rather than silent.
 
 Lead time alone was never the problem. Raising it from 2s to 8s changed nothing:
 spread stayed at ~5.9s and 49 of 50 still missed the barrier. A probe with Redis
@@ -97,7 +101,7 @@ being measured must not be at the mercy of when the harness happened to start.
 The gap is untouched and the limiters are unmodified -- the only thing removed
 is the scheduler."""
 
-PHASE = 3.0
+PHASE = 2.0
 """Seconds between the naive volley and the atomic one, so the two do not
 contend for connections or instances while each is being measured.
 
