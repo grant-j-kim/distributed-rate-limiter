@@ -5,6 +5,12 @@ window counter, token bucket, leaky bucket — each in two implementations: one
 in-memory, and one backed by Redis that stays correct when several server
 instances share a limit.
 
+**[Live demo →](https://gklimiter-demo-two.vercel.app/)** — compare all five at
+a burst boundary, then watch a limiter that counts, decides and appends as
+three separate commands lose a real race. Run across 34 Vercel instances
+against one Redis, it admitted **43 requests against a limit of 5**; the same
+algorithm as one atomic Lua script admitted **exactly 5**.
+
 ```python
 from distributed_rate_limiter import create_limiter
 

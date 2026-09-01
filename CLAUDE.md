@@ -25,7 +25,8 @@ All six milestones are complete. 334 tests passing.
       throwaway venv outside the repo and runs a real FastAPI app against it:
       **50 of 120 concurrent admitted against a limit of 50, identical with
       one server process and with two.** Not published to PyPI.
-- [x] **6. Hosted demo** — deployed on Vercel from `web/`, with `public/` for
+- [x] **6. Hosted demo** — live at https://gklimiter-demo-two.vercel.app/,
+      deployed on Vercel from `web/`, with `public/` for
       the page. Two halves. The **playground** replays an arrival schedule
       against the *in-memory* limiters on a driven clock: instant, deterministic
       and costing no Redis, and it reproduces four of the five measured peaks

@@ -69,6 +69,7 @@ demo = ["redis>=5.0", "fastapi>=0.110", "httpx>=0.27"]
 [project.urls]
 Homepage = "https://github.com/grant-j-kim/distributed-rate-limiter"
 Source = "https://github.com/grant-j-kim/distributed-rate-limiter"
+Demo = "https://gklimiter-demo-two.vercel.app/"
 
 [tool.vercel]
 # Vercel finds several FastAPI apps in this repo (examples/, packaging/, web/)

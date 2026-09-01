@@ -282,6 +282,7 @@ async def race_run(request: Request) -> dict:
             }
 
     return {"live": True, "variants": variants,
+            "redis_version": await race.redis_version(race._client()),
             **{k: v for k, v in authorised.items()
                if k in ("concurrency", "limit", "monthly_budget", "per_ip")}}
 

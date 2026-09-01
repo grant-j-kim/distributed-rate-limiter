@@ -216,6 +216,24 @@ def _client(max_connections: int = CONCURRENCY + 14):
     return _CACHED
 
 
+_VERSION: str | None = None
+
+
+async def redis_version(client) -> str:
+    """The server's version, read once per instance and remembered.
+
+    Reported in the run response so `record_punchline.py` can stamp a recording
+    without needing Redis credentials of its own -- it drives the deployed site
+    over HTTP, and handing a recording script production secrets to learn one
+    string would be a poor trade.
+    """
+    global _VERSION
+    if _VERSION is None:
+        info = await client.info("server")
+        _VERSION = info.get("redis_version", "unknown")
+    return _VERSION
+
+
 def _secret() -> bytes:
     """Signing key for run tokens, derived from the Redis URL.
 

@@ -40,18 +40,11 @@ async def main() -> int:
             print("  Start the server with REDIS_URL set and try again.")
             return 1
 
-        redis_version = "unknown"
-        if url := os.environ.get("REDIS_URL"):
-            import redis.asyncio as redis
-            r = redis.from_url(url)
-            redis_version = (await r.info("server")).get("redis_version", "unknown")
-            await r.aclose()
-
     naive, lua = body["variants"]["naive"], body["variants"]["lua"]
     limit = body["limit"]
     record = {
         "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "redis_version": redis_version,
+        "redis_version": body.get("redis_version", "unknown"),
         "recorded_against": TARGET,
         "concurrency": naive["fired"],
         "limit": limit,
