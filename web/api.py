@@ -13,6 +13,7 @@ dragging the slider is as fast as the arithmetic.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import time
@@ -173,31 +174,34 @@ async def race_start(request: Request) -> dict:
         # without one. Not an error, and not something to hide.
         return {"live": False, "reason": "no-redis", "recording": _recording(), **shape}
 
-    client = race._client()
     try:
-        rationing = await race.check_rationing(client, forwarded_for_key(1)(request))
+        rationing = await race.check_rationing(race._client(),
+                                               forwarded_for_key(1)(request))
     except Exception as exc:  # noqa: BLE001 -- reported, not swallowed
         # An unreachable Redis is information. A page about correctness that
         # quietly swaps in a recording when the real thing fails is the one
         # failure mode worth refusing outright.
         return {"live": False, "reason": "error", "detail": f"{type(exc).__name__}: {exc}",
                 "recording": _recording(), **shape}
-    finally:
-        await client.aclose()
 
     if not rationing.allowed:
         return {"live": False, "reason": rationing.reason,
                 "retry_after": rationing.retry_after,
                 "recording": _recording(), **shape}
 
-    run_id, expires_at, token = race.new_run()
-    return {"live": True, "run": run_id, "exp": expires_at, "token": token, **shape}
+    # The barrier instant lives on Redis's clock, so every fire -- wherever it
+    # lands -- computes the same target and they arrive together.
+    start_at = await redis_now(race._client()) + race.LEAD
+    run_id, expires_at, token = race.new_run(start_at)
+    return {"live": True, "run": run_id, "exp": expires_at, "token": token,
+            "start": start_at, "lead": race.LEAD, "phase": race.PHASE, **shape}
 
 
 @app.get("/api/race/fire")
 async def race_fire(
     run: str,
     exp: float,
+    start: float,
     token: str,
     variant: Literal["naive", "lua"],
 ) -> dict:
@@ -208,32 +212,48 @@ async def race_fire(
     """
     if race.redis_url() is None:
         raise HTTPException(status_code=409, detail="no live Redis configured")
-    if not race.verify_token(run, exp, token):
+    if not race.verify_token(run, exp, token, start):
         raise HTTPException(status_code=403, detail="invalid or expired run token")
 
     client = race._client()
-    try:
-        limiter = race.build_limiter(client, run, variant)
-        # Timestamp from Redis, not from this process. The fifty fires may land
-        # on different instances, and comparing their local clocks at the
-        # millisecond scale -- which is exactly the scale that decides whether
-        # a race happens -- would measure clock skew as if it were stagger.
-        # Reading the store's own clock is the same reasoning that makes the
-        # Redis limiters call TIME instead of taking a clock argument.
-        started = await redis_now(client)
-        elapsed = time.perf_counter()
-        decision = await limiter.check("race")
-        # A duration is local, so perf_counter is right here: no cross-instance
-        # comparison is involved, and it excludes the TIME round trip above.
-        elapsed = (time.perf_counter() - elapsed) * 1000
-    finally:
-        await client.aclose()
+    # Read the shared clock once. The fifty fires may land on different
+    # instances, and comparing their local clocks at the millisecond scale --
+    # exactly the scale that decides whether a race happens -- would measure
+    # skew as if it were stagger. Same reasoning that makes the Redis limiters
+    # call TIME rather than take a clock argument.
+    anchor = await redis_now(client)
+    mark = time.perf_counter()
+
+    # Wait for the barrier. This is what turns fifty independently scheduled
+    # invocations into fifty simultaneous requests: whatever stagger Vercel
+    # introduced is absorbed here instead of landing in the measurement.
+    delay = race.target_for(start, variant) - anchor
+    late = delay < 0
+    if not late:
+        await asyncio.sleep(delay)
+
+    # This request's instant on the Redis timeline, without spending a second
+    # TIME: anchored on the shared reading, advanced by locally measured
+    # elapsed. A duration is process-local, so perf_counter is safe for it
+    # even though a timestamp would not be.
+    arrival = anchor + (time.perf_counter() - mark)
+
+    # The naive limiter is handed that same reading, so the only difference
+    # between the two variants is atomicity, not which clock they trust.
+    limiter = race.build_limiter(client, run, variant, arrival)
+    elapsed = time.perf_counter()
+    decision = await limiter.check("race")
+    elapsed = (time.perf_counter() - elapsed) * 1000
 
     return {
         "allowed": decision.allowed,
         "remaining": decision.remaining,
-        "t": started,
+        "t": arrival,
         "rtt_ms": round(elapsed, 3),
+        # Reported, not hidden: an invocation that started after the barrier
+        # never joined the volley, and a run full of stragglers is a run whose
+        # result means less.
+        "late": late,
     }
 
 
@@ -244,9 +264,9 @@ async def race_code() -> dict:
     Read with `inspect` rather than pasted into the page, so the code a visitor
     is shown is necessarily the code that just ran.
     """
-    from distributed_rate_limiter.redis_backend.fixed_window import CHECK_SCRIPT
+    from distributed_rate_limiter.redis_backend.sliding_window_log import CHECK_SCRIPT
 
     return {
-        "naive": inspect.getsource(race.NaiveRedisFixedWindow.check),
+        "naive": inspect.getsource(race.NaiveRedisSlidingWindowLog.check),
         "lua": CHECK_SCRIPT.strip(),
     }

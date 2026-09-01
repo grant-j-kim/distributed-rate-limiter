@@ -34,11 +34,14 @@ async def client(monkeypatch):
 
 async def test_run_token_round_trips(monkeypatch):
     monkeypatch.setenv("REDIS_URL", "redis://example.invalid/0")
-    run_id, expires_at, token = race.new_run()
+    run_id, expires_at, token = race.new_run(0.0)
 
     assert race.verify_token(run_id, expires_at, token)
     assert not race.verify_token(run_id, expires_at, "0" * 32)
     assert not race.verify_token("other-run", expires_at, token)
+    # The barrier instant is signed too, so a caller cannot move its own
+    # firing time and quietly spread the volley back out.
+    assert not race.verify_token(run_id, expires_at, token, start_at=99.0)
 
 
 async def test_expired_token_is_refused(monkeypatch):
@@ -59,7 +62,8 @@ async def test_firing_without_a_valid_token_is_refused(client, monkeypatch):
     """
     monkeypatch.setenv("REDIS_URL", "redis://example.invalid/0")
     response = await client.get("/api/race/fire", params={
-        "run": "deadbeef", "exp": time.time() + 60, "token": "0" * 32, "variant": "lua"})
+        "run": "deadbeef", "exp": time.time() + 60, "start": 0.0,
+        "token": "0" * 32, "variant": "lua"})
 
     assert response.status_code == 403
 
@@ -97,15 +101,15 @@ async def test_code_panel_reads_the_running_source(client):
     """The page shows source read by inspect, not a paste that can drift."""
     body = (await client.get("/api/race/code")).json()
 
-    assert "self.client.get(" in body["naive"]
-    assert "self.client.set(" in body["naive"]
+    assert "self.client.zcount(" in body["naive"]
+    assert "self.client.zadd(" in body["naive"]
     assert "redis.call" in body["lua"]
 
 
 async def test_naive_control_over_admits_against_real_redis(redis_client):
     """The exhibit copy must fail the same way the test control does.
 
-    web/race.py deliberately duplicates NaiveRedisFixedWindow rather than
+    web/race.py deliberately duplicates the naive control rather than
     importing it, so the two can drift. This is the assertion that catches a
     drift that would matter: an exhibit that stopped over-admitting would leave
     the demo showing nothing.
@@ -113,8 +117,10 @@ async def test_naive_control_over_admits_against_real_redis(redis_client):
     if redis_client is None:
         pytest.skip("no Redis server")
 
-    naive = race.NaiveRedisFixedWindow(
-        redis_client, limit=5, window=10.0, prefix=f"racetest:{uuid.uuid4().hex}")
+    now = (await redis_client.time())[0]
+    naive = race.NaiveRedisSlidingWindowLog(
+        redis_client, limit=5, window=30.0,
+        prefix=f"racetest:{uuid.uuid4().hex}", now=now)
     decisions = await asyncio.gather(*(naive.check("c") for _ in range(50)))
 
     assert sum(1 for d in decisions if d.allowed) > 5
@@ -135,15 +141,21 @@ async def test_fire_reports_the_two_numbers_that_decide_the_outcome(monkeypatch,
     from tests.conftest import REDIS_URL as TEST_REDIS_URL
     monkeypatch.setenv("REDIS_URL", TEST_REDIS_URL)
 
+    # Clear the rationing counters first. They are real limiter state with a
+    # one-hour window, so without this the test quietly starts *skipping* after
+    # three runs -- passing by not running, which is the worst way to fail.
+    async for key in redis_client.scan_iter(match="race:quota:*"):
+        await redis_client.delete(key)
+    race._CACHED = None
+
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         start = (await c.post("/api/race/start")).json()
-        if not start.get("live"):
-            pytest.skip(f"race not live: {start.get('reason')}")
+        assert start.get("live"), f"race not live: {start.get('reason')}"
 
         body = (await c.get("/api/race/fire", params={
-            "run": start["run"], "exp": start["exp"], "token": start["token"],
-            "variant": "lua"})).json()
+            "run": start["run"], "exp": start["exp"], "start": start["start"],
+            "token": start["token"], "variant": "lua"})).json()
 
     assert body["allowed"] is True
     assert body["t"] > 1_700_000_000, "timestamp should be UNIX seconds from Redis"

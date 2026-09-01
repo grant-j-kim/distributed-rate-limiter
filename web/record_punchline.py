@@ -36,8 +36,8 @@ TARGET = os.environ.get("RACE_URL", "http://127.0.0.1:8000")
 
 
 async def fire_all(client: httpx.AsyncClient, start: dict, variant: str) -> list[bool]:
-    query = {"run": start["run"], "exp": start["exp"], "token": start["token"],
-             "variant": variant}
+    query = {"run": start["run"], "exp": start["exp"], "start": start["start"],
+             "token": start["token"], "variant": variant}
     responses = await asyncio.gather(
         *(client.get("/api/race/fire", params=query)
           for _ in range(start["concurrency"]))
@@ -53,6 +53,8 @@ async def main() -> int:
             print("  Start the server with REDIS_URL set and try again.")
             return 1
 
+        # Both volleys wait on the barrier the server issued, so the recording
+        # captures the same synchronised race a visitor triggers.
         naive = await fire_all(client, start, "naive")
         lua = await fire_all(client, start, "lua")
 

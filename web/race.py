@@ -40,22 +40,50 @@ CONCURRENCY = 50
 """Requests fired at once, per variant."""
 
 RACE_LIMIT = 5
-RACE_WINDOW = 10.0
-"""The limit being raced. Small, so "50 admitted against a limit of 5" is a
-number a visitor can hold in their head."""
+RACE_WINDOW = 30.0
+"""The limit being raced. Small, so the counts are numbers a visitor can hold.
+
+The algorithm is the **sliding window log**, not the fixed window, and that is
+a correctness requirement rather than a preference. A fixed window admits a
+full fresh allowance either side of a boundary -- this project's own 2.00x
+finding -- so a run that straddled one would admit 10 against a limit of 5 and
+read on the page as the atomic limiter failing. It measured exactly that in
+production: 50 requests spread over 7.3s crossed a 10s boundary and admitted
+5 + 5. The sliding log is exact wherever it falls, so "exactly 5" holds
+whenever a visitor happens to press the button."""
 
 PER_IP_RUNS, PER_IP_WINDOW = 3, 3600.0
-MONTHLY_RUNS, MONTHLY_WINDOW = 1500, 30 * 24 * 3600.0
-"""A run costs roughly 150 Redis commands: 50 EVALSHA for the Lua limiter, plus
-50 GET and 50 SET for the naive one. 1500 runs is about 225k commands against a
-free tier of 500k per month, leaving room for the rationing checks themselves
-and a wide margin.
+MONTHLY_RUNS, MONTHLY_WINDOW = 1000, 30 * 24 * 3600.0
+"""A run costs about 300 Redis commands: each naive fire spends TIME, ZCOUNT,
+ZADD and EXPIRE, and each atomic fire spends TIME and one EVALSHA. 1000 runs is
+roughly 300k against a free tier of 500k per month, which leaves real margin --
+1500 would not.
 
 The monthly budget uses a **sliding window counter, not a fixed window**. A
 month-long fixed window would let someone spend the whole budget on the last
 day of one window and the whole of it again on the first day of the next --
 2x the intended spend across a few hours. That is this project's own headline
 finding, and it would be an embarrassing way to run out of credit."""
+
+LEAD = 2.0
+"""How long after `/start` the first volley fires.
+
+Every fire sleeps until a common instant on Redis's clock before touching it,
+so invocation stagger is absorbed by the sleep instead of landing in the
+measurement. Without this the requests arrive hundreds of milliseconds apart --
+7.3 seconds apart, measured in production -- while the gap they have to overlap
+is one round trip, about one millisecond. A race whose participants arrive that
+far apart is not a race.
+
+This is the technique `loadtest/runner.py` already uses when it waits for
+`next_boundary` before starting a scenario, and for the same reason: what is
+being measured must not be at the mercy of when the harness happened to start.
+The gap is untouched and the limiters are unmodified -- the only thing removed
+is the scheduler."""
+
+PHASE = 4.0
+"""Seconds between the naive volley and the atomic one, so the two do not
+contend for connections or instances while each is being measured."""
 
 TOKEN_TTL = 120.0
 """How long a run token stays valid. Long enough for fifty round trips on a bad
@@ -71,36 +99,56 @@ class Rationing:
     retry_after: float | None = None
 
 
-class NaiveRedisFixedWindow(RateLimiter):
-    """Read, decide, write. The mistake the Lua script exists to prevent.
+class NaiveRedisSlidingWindowLog(RateLimiter):
+    """Count, decide, append. The mistake the Lua script exists to prevent.
 
-    Three round trips with two gaps in between. Any number of clients can read
-    the same count before any of them writes it back, so they all conclude they
-    are under the limit and all proceed.
+    A faithful naive counterpart to `RedisSlidingWindowLog`: the same algorithm,
+    the same sorted set, the same pruning by score -- but issued as separate
+    commands, so there is a gap between counting and appending. Any number of
+    requests can count the same total before any of them appends, and all of
+    them conclude they are under the limit.
+
+    Deliberately the *same* algorithm as the atomic side, so the only
+    difference between the two rows on the page is atomicity. Racing a naive
+    counter against an atomic log would confound two variables and prove
+    neither.
 
     Kept as a working implementation rather than a snippet because the page
-    *runs* it: a described race is an assertion, a race you can watch fail is
-    evidence.
+    runs it: a described race is an assertion, a race you can watch fail is
+    evidence. It is a deliberate copy of the control in
+    `tests/test_redis_concurrency.py` -- that one is a control that must keep
+    failing, this one is an exhibit, so they are allowed to drift and neither
+    belongs in the library.
     """
 
-    def __init__(self, client, limit: int, window: float, *, prefix: str):
+    def __init__(self, client, limit: int, window: float, *, prefix: str, now: float):
         self.client = client
         self.limit = limit
         self.window = window
         self.prefix = prefix
+        # Handed the same Redis clock reading the endpoint already took for its
+        # timing. Reading a local clock here would add a second bug -- skew
+        # between instances -- on top of the race, and muddy which one the page
+        # is showing.
+        self.now = now
 
     async def check(self, key: str) -> Decision:
         redis_key = f"{self.prefix}:{key}"
-        current = await self.client.get(redis_key)  # <-- the gap opens here
-        count = int(current or 0)
+        cutoff = self.now - self.window
 
+        count = await self.client.zcount(redis_key, cutoff, "+inf")  # <-- gap opens
         if count >= self.limit:
             return Decision(allowed=False, limit=self.limit, remaining=0,
                             reset_after=self.window, retry_after=self.window)
 
-        # ... and closes here. Everything between is a window in which another
-        # request reads the same count.
-        await self.client.set(redis_key, count + 1, ex=int(self.window))
+        # ... and closes here. Everything in between is a window in which
+        # another request counts the same total.
+        #
+        # The member is a uuid because ZADD on an existing member updates its
+        # score instead of inserting: a colliding member would silently make
+        # the log hold one entry however many requests arrived.
+        await self.client.zadd(redis_key, {uuid.uuid4().hex: self.now})
+        await self.client.expire(redis_key, int(self.window) + 1)
         return Decision(allowed=True, limit=self.limit,
                         remaining=self.limit - (count + 1), reset_after=self.window)
 
@@ -119,22 +167,33 @@ def redis_url() -> str | None:
     return os.environ.get("REDIS_URL") or None
 
 
-def _client(max_connections: int = 2):
-    """A client for the life of one request, closed by the caller.
+_CACHED = None
 
-    Upstash caps concurrent connections per database and does not publish the
-    number; the documented fix for serverless is exactly this -- open inside
-    the function, close when done -- so the connection count tracks in-flight
-    invocations rather than accumulating.
 
-    The default pool is 2, not `CONCURRENCY`. Each `/fire` invocation performs
-    a single check, so a pool sized for the whole race would be one invocation
-    claiming headroom for fifty. Only the recorder, which fires all fifty from
-    one process, asks for the larger pool.
+def _client(max_connections: int = CONCURRENCY + 14):
+    """One client per instance, reused across invocations, never closed here.
+
+    Opening a client per request means a fresh TLS handshake to Upstash every
+    time. Measured in production that showed up as 50 requests reaching Redis
+    over 7.3 seconds -- about 145ms apart -- which is no overlap at all, and a
+    race with no overlap is a race nobody loses. Reusing the connection is both
+    the standard serverless pattern and the thing that gives the requests a
+    chance to actually collide.
+
+    The cap is generous on purpose. Connections are created lazily, so an
+    instance handling four concurrent requests opens four -- the number is a
+    ceiling, not a reservation. A tight cap is actively harmful here: redis-py
+    raises MaxConnectionsError once it is hit, and the obvious alternative, a
+    blocking pool, would be worse. Queueing for a connection *serialises* the
+    requests, which would destroy the overlap the race depends on. A demo that
+    cannot lose the race proves nothing.
     """
+    global _CACHED
     import redis.asyncio as redis
 
-    return redis.from_url(redis_url(), max_connections=max_connections)
+    if _CACHED is None:
+        _CACHED = redis.from_url(redis_url(), max_connections=max_connections)
+    return _CACHED
 
 
 def _secret() -> bytes:
@@ -148,12 +207,23 @@ def _secret() -> bytes:
     return hashlib.sha256(("drl-race:" + (redis_url() or "")).encode()).digest()
 
 
-def issue_token(run_id: str, expires_at: float) -> str:
-    payload = f"{run_id}:{expires_at:.0f}".encode()
+def issue_token(run_id: str, expires_at: float, start_at: float = 0.0) -> str:
+    payload = f"{run_id}:{expires_at:.0f}:{start_at:.3f}".encode()
     return hmac.new(_secret(), payload, hashlib.sha256).hexdigest()[:32]
 
 
-def verify_token(run_id: str, expires_at: float, token: str) -> bool:
+def target_for(start_at: float, variant: str) -> float:
+    """When this fire should touch Redis, derived from the signed start.
+
+    Derived server-side from a signed value rather than taken from the client,
+    so a caller cannot nominate its own firing instant and quietly spread the
+    volley back out.
+    """
+    return start_at + (PHASE if variant == "lua" else 0.0)
+
+
+def verify_token(run_id: str, expires_at: float, token: str,
+                 start_at: float = 0.0) -> bool:
     """Validate a run token without touching Redis.
 
     Rationing is charged once, when a run starts. If each of the fifty fires
@@ -165,7 +235,7 @@ def verify_token(run_id: str, expires_at: float, token: str) -> bool:
     """
     if expires_at < time.time():
         return False
-    return hmac.compare_digest(token, issue_token(run_id, expires_at))
+    return hmac.compare_digest(token, issue_token(run_id, expires_at, start_at))
 
 
 async def check_rationing(client, ip_key: str) -> Rationing:
@@ -194,13 +264,13 @@ async def check_rationing(client, ip_key: str) -> Rationing:
     return Rationing(True)
 
 
-def new_run() -> tuple[str, float, str]:
+def new_run(start_at: float) -> tuple[str, float, str]:
     run_id = uuid.uuid4().hex[:16]
     expires_at = time.time() + TOKEN_TTL
-    return run_id, expires_at, issue_token(run_id, expires_at)
+    return run_id, expires_at, issue_token(run_id, expires_at, start_at)
 
 
-def build_limiter(client, run_id: str, variant: str) -> RateLimiter:
+def build_limiter(client, run_id: str, variant: str, now: float) -> RateLimiter:
     """One limiter for one run, so concurrent visitors never share a counter.
 
     Keys carry the run id, which is why a replayed token is harmless: it can
@@ -208,6 +278,10 @@ def build_limiter(client, run_id: str, variant: str) -> RateLimiter:
     """
     prefix = f"race:{run_id}:{variant}"
     if variant == "naive":
-        return NaiveRedisFixedWindow(client, RACE_LIMIT, RACE_WINDOW, prefix=prefix)
-    return create_limiter("fixed_window", limit=RACE_LIMIT, window=RACE_WINDOW,
-                          backend="redis", client=client, prefix=prefix)
+        return NaiveRedisSlidingWindowLog(client, RACE_LIMIT, RACE_WINDOW,
+                                          prefix=prefix, now=now)
+    # No clock argument: the Redis limiter reads Redis's own TIME, which is the
+    # whole reason instances with skewed clocks still agree.
+    return create_limiter("sliding_window_log", limit=RACE_LIMIT,
+                          window=RACE_WINDOW, backend="redis",
+                          client=client, prefix=prefix)
