@@ -25,6 +25,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 
 from distributed_rate_limiter.keys import forwarded_for_key
+from distributed_rate_limiter.middleware import rate_limit
 
 from loadtest.runner import redis_now
 from loadtest.traffic import burst, merge
@@ -168,40 +169,48 @@ def _recording() -> dict | None:
     return json.loads(_RECORDING.read_text(encoding="utf-8"))
 
 
-async def _authorise_run(request: Request) -> dict:
-    """Charge one run against the rationing and mint a signed barrier token.
+def _limited(func):
+    """Apply this project's own per-endpoint limiters to the race.
 
-    Shared by `/start` and `/run` so the two cannot drift into charging
-    differently -- rationing that depends on which endpoint you call is
-    rationing that can be walked around.
+    The site used to call `create_limiter` by hand here. It now uses
+    `@rate_limit`, the public decorator a user of this package would actually
+    write, so the demo runs the interface it documents rather than a private
+    shortcut past it. Two of them stack: the per-IP one runs first, because
+    rejecting one greedy visitor should not cost a slot in the global budget.
+
+    Per endpoint rather than app-wide middleware on purpose. Vercel stops
+    promoting static files to its CDN once top-level middleware exists, which
+    would push `public/` back through the function on every request -- and the
+    playground has nothing to protect anyway, since it touches no Redis.
+
+    Backed by Redis rather than memory, and that is not a preference. This
+    deployment was measured serving one volley across **49 instances**. An
+    in-memory limiter would have given each visitor 49 independent counters and
+    49x their quota, while passing every test you would think to write for it.
+    The naive race's lesson, one level up.
     """
+    func = rate_limit(
+        limiter=race.quota_limiter(race.MONTHLY_RUNS, race.MONTHLY_WINDOW,
+                                   "race:quota:global"),
+        # One shared key: a per-key limit bounds each visitor and says nothing
+        # about the total, and it is the total the free tier cares about.
+        key_func=lambda request: "all",
+    )(func)
+    return rate_limit(
+        limiter=race.quota_limiter(race.PER_IP_RUNS, race.PER_IP_WINDOW,
+                                   "race:quota:ip"),
+        key_func=forwarded_for_key(1),
+    )(func)
+
+
+async def _mint_run() -> dict:
+    """A signed barrier token for one authorised run."""
     shape = {
         "concurrency": race.CONCURRENCY,
         "limit": race.RACE_LIMIT,
         "monthly_budget": race.MONTHLY_RUNS,
         "per_ip": [race.PER_IP_RUNS, race.PER_IP_WINDOW],
     }
-
-    if race.redis_url() is None:
-        # No live Redis at all -- a preview deployment, or local development
-        # without one. Not an error, and not something to hide.
-        return {"live": False, "reason": "no-redis", "recording": _recording(), **shape}
-
-    try:
-        rationing = await race.check_rationing(race._client(),
-                                               forwarded_for_key(1)(request))
-    except Exception as exc:  # noqa: BLE001 -- reported, not swallowed
-        # An unreachable Redis is information. A page about correctness that
-        # quietly swaps in a recording when the real thing fails is the one
-        # failure mode worth refusing outright.
-        return {"live": False, "reason": "error", "detail": f"{type(exc).__name__}: {exc}",
-                "recording": _recording(), **shape}
-
-    if not rationing.allowed:
-        return {"live": False, "reason": rationing.reason,
-                "retry_after": rationing.retry_after,
-                "recording": _recording(), **shape}
-
     # The barrier instant lives on Redis's clock, so every fire -- wherever it
     # lands -- computes the same target and they arrive together.
     start_at = await redis_now(race._client()) + race.LEAD
@@ -210,10 +219,18 @@ async def _authorise_run(request: Request) -> dict:
             "start": start_at, "lead": race.LEAD, "phase": race.PHASE, **shape}
 
 
-@app.post("/api/race/start")
-async def race_start(request: Request) -> dict:
-    """Charge one run and hand back a token, or hand back the recording."""
-    return await _authorise_run(request)
+@app.get("/api/race/recording")
+async def race_recording() -> dict:
+    """The last real run. Free, unrationed, and served when a live run is not.
+
+    A separate endpoint because the limiter now answers a spent quota with a
+    real 429 and Retry-After -- the library's actual behaviour, which is worth
+    showing -- rather than a 200 carrying a consolation prize.
+    """
+    return {"live": False, "recording": _recording(),
+            "concurrency": race.CONCURRENCY, "limit": race.RACE_LIMIT,
+            "monthly_budget": race.MONTHLY_RUNS,
+            "per_ip": [race.PER_IP_RUNS, race.PER_IP_WINDOW]}
 
 
 def _self_base_url(request: Request) -> str:
@@ -229,6 +246,7 @@ def _self_base_url(request: Request) -> str:
 
 
 @app.post("/api/race/run")
+@_limited
 async def race_run(request: Request) -> dict:
     """Run both volleys by fanning out from the server, and report what happened.
 
@@ -248,9 +266,10 @@ async def race_run(request: Request) -> dict:
     """
     import httpx
 
-    authorised = await _authorise_run(request)
-    if not authorised.get("live"):
-        return authorised
+    if race.redis_url() is None:
+        return await race_recording()
+
+    authorised = await _mint_run()
 
     query = {"run": authorised["run"], "exp": authorised["exp"],
              "start": authorised["start"], "token": authorised["token"]}

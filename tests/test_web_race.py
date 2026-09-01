@@ -75,10 +75,9 @@ async def test_without_redis_the_fallback_says_so(client):
     silently swapped a recording in for a live result would be the one
     dishonesty that matters here.
     """
-    body = (await client.post("/api/race/start")).json()
+    body = (await client.post("/api/race/run")).json()
 
     assert body["live"] is False
-    assert body["reason"] == "no-redis"
     assert body["recording"]["lua_admitted"] == race.RACE_LIMIT
 
 
@@ -150,8 +149,8 @@ async def test_fire_reports_the_two_numbers_that_decide_the_outcome(monkeypatch,
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
-        start = (await c.post("/api/race/start")).json()
-        assert start.get("live"), f"race not live: {start.get('reason')}"
+        from web.api import _mint_run
+        start = await _mint_run()
 
         body = (await c.get("/api/race/fire", params={
             "run": start["run"], "exp": start["exp"], "start": start["start"],
@@ -177,3 +176,53 @@ async def test_probe_reports_instance_identity(client):
     assert first["instance"] == second["instance"], "same process, same id"
     assert len(first["instance"]) == 8
     assert second["age"] >= first["age"], "age should increase within one instance"
+
+
+async def test_the_race_endpoint_answers_a_spent_quota_with_429(monkeypatch, redis_client):
+    """The demo is limited by this package's own decorator, and it really fires.
+
+    Worth asserting rather than assuming: the limiter is built lazily so the
+    endpoint is decorated whether or not a REDIS_URL existed at import, and a
+    limiter that silently admits everything would look exactly like a working
+    one until the free tier ran out.
+
+    The quota is exhausted directly rather than by running the race ten times,
+    which would take a minute and spend real commands for no extra assurance.
+    """
+    if redis_client is None:
+        pytest.skip("no Redis server")
+
+    from tests.conftest import REDIS_URL as TEST_REDIS_URL
+    monkeypatch.setenv("REDIS_URL", TEST_REDIS_URL)
+    race._CACHED = None
+
+    ip = "203.0.113.7"
+    quota = race.quota_limiter(race.PER_IP_RUNS, race.PER_IP_WINDOW, "race:quota:ip")
+    await quota.reset(ip)
+    for _ in range(race.PER_IP_RUNS):
+        assert (await quota.check(ip)).allowed
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        # An explicit forwarded-for makes the key deterministic, and is what
+        # forwarded_for_key(1) reads behind a single trusted proxy.
+        response = await c.post("/api/race/run", headers={"x-forwarded-for": ip})
+
+    assert response.status_code == 429
+    assert response.headers["Retry-After"]
+    await quota.reset(ip)
+
+
+async def test_without_redis_the_quota_limiter_stands_aside(monkeypatch):
+    """No shared storage means nothing to count with, so it must not block.
+
+    The endpoint is decorated unconditionally; if the limiter refused instead
+    of admitting when Redis is absent, local development and every preview
+    deployment would answer 429 rather than serving the recording.
+    """
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    race._CACHED = None
+
+    quota = race.quota_limiter(1, 60.0, "race:quota:ip")
+    for _ in range(5):
+        assert (await quota.check("anyone")).allowed

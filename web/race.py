@@ -176,6 +176,54 @@ class NaiveRedisSlidingWindowLog(RateLimiter):
         await self.client.delete(f"{self.prefix}:{key}")
 
 
+class LazyRedisLimiter(RateLimiter):
+    """A limiter that builds itself on first use, and stands aside with no Redis.
+
+    `@rate_limit` builds its limiter at decoration time, which is import time,
+    and a Redis limiter needs a client then. Deciding at import whether to
+    decorate at all -- the obvious alternative -- has two faults: the 429 path
+    becomes untestable, since tests import without a REDIS_URL and would get an
+    undecorated endpoint; and a deployment where the variable arrived late
+    would run entirely unlimited while looking correct. Both are the silent
+    kind of wrong.
+
+    So the endpoint is always decorated. When there is no Redis the limiter
+    admits everything, which is the honest behaviour: without shared storage
+    there is nothing to count with, and the route it guards already falls back
+    to the recording.
+    """
+
+    def __init__(self, build):
+        self._build = build
+        self._limiter: RateLimiter | None = None
+
+    def _resolve(self) -> RateLimiter | None:
+        if redis_url() is None:
+            return None
+        if self._limiter is None:
+            self._limiter = self._build()
+        return self._limiter
+
+    async def check(self, key: str) -> Decision:
+        limiter = self._resolve()
+        if limiter is None:
+            return Decision(allowed=True, limit=0, remaining=0, reset_after=0.0)
+        self.limit, self.window = limiter.limit, limiter.window
+        return await limiter.check(key)
+
+    async def reset(self, key: str) -> None:
+        limiter = self._resolve()
+        if limiter is not None:
+            await limiter.reset(key)
+
+
+def quota_limiter(limit: int, window: float, prefix: str) -> LazyRedisLimiter:
+    """One of the two limiters rationing the race, resolved on first use."""
+    return LazyRedisLimiter(lambda: create_limiter(
+        "sliding_window_counter", limit=limit, window=window,
+        backend="redis", client=_client(), prefix=prefix))
+
+
 def redis_url() -> str | None:
     """The live Redis, or None when there isn't one.
 

@@ -354,7 +354,9 @@ function showRecording(body) {
   rec.lua.forEach((ok, i) => raceDot(lua.svg, i, ok));
   naive.stat.innerHTML = `<b>${rec.naive_admitted}</b> of ${rec.concurrency} admitted`;
   lua.stat.innerHTML = `<b>${rec.lua_admitted}</b> of ${rec.concurrency} admitted`;
-  const why = { "no-redis": "no live Redis here", "per-ip": "you have used your runs for this hour",
+  const why = { "no-redis": "no live Redis here",
+    "per-ip": `rate limited by this package &mdash; HTTP 429` +
+      (body.retry_header ? `, retry after ${body.retry_header}s` : ""),
     budget: "this month's budget is spent", error: "the live run failed" }[body.reason] || body.reason;
   status.innerHTML = `<b>Recording</b> &mdash; ${why}. Real run on Redis ` +
     `${rec.redis_version}, ${rec.recorded_at.replace("T", " ").replace("+00:00", " UTC")}.` +
@@ -370,8 +372,19 @@ raceBtn.addEventListener("click", async () => {
     // measured against this deployment, fifty concurrent fetches arrived 110ms
     // apart, one at a time, and never overlapped.
     countdown(7, "server firing two volleys");
-    const body = await (await fetch("/api/race/run", { method: "POST" })).json();
+    const res = await fetch("/api/race/run", { method: "POST" });
     clearInterval(ticking);
+    // A spent quota now comes back as a real 429 with Retry-After -- this
+    // package's own decorator answering for its own demo. The recording is a
+    // separate, unrationed fetch rather than a consolation payload smuggled
+    // into a 200.
+    // The 429 body is just a detail string; the useful part is the header the
+    // limiter sets, which is the same Retry-After any user of this package
+    // would get.
+    const body = res.status === 429
+      ? { ...(await (await fetch("/api/race/recording")).json()),
+          reason: "per-ip", retry_header: res.headers.get("Retry-After") }
+      : await res.json();
 
     document.getElementById("rationing").textContent =
       `Every run spends real commands from a free tier, so it is rationed by ` +
